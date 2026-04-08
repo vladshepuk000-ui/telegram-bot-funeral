@@ -1,6 +1,10 @@
-"""Хендлери каталогу: послуги, категорії, товари, пакети."""
+"""Хендлери каталогу: послуги, категорії, товари, памятники."""
+import logging
+from pathlib import Path
+
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InputMediaPhoto
+from aiogram.types import FSInputFile
 
 from db.database import get_connection
 from db import models
@@ -10,10 +14,13 @@ from keyboards.catalog_kb import (
     categories_keyboard,
     products_keyboard,
     product_detail_keyboard,
-    packages_keyboard,
-    package_detail_keyboard,
 )
 from config import settings
+
+logger = logging.getLogger(__name__)
+
+# Папка з фото відносно цього файлу: funeral_bot/assets/images/
+IMAGES_DIR = Path(__file__).parent.parent / "assets" / "images"
 
 router = Router()
 
@@ -159,46 +166,129 @@ async def show_product_detail(callback: CallbackQuery) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Пакети
+# Виготовлення памятників
 # ---------------------------------------------------------------------------
 
+MONUMENTS = [
+    ("Дитячі ексклюзивні",   "DE"),
+    ("Дитячі класичні",      "DS"),
+    ("Дитячі комбіновані",   "DK"),
+    ("Одинарні ексклюзивні", "OE"),
+    ("Одинарні класичні",    "OS"),
+    ("Одинарні комбіновані", "OK"),
+    ("Подвійні ексклюзивні", "PE"),
+    ("Подвійні класичні",    "PS"),
+    ("Подвійні комбіновані", "PK"),
+]
+
+
+def _monuments_list_keyboard():
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    builder = InlineKeyboardBuilder()
+    for name, code in MONUMENTS:
+        builder.button(text=f"{code} — {name}", callback_data=f"monument:{code}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def _photo_nav_keyboard(code: str, index: int, total: int):
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    builder = InlineKeyboardBuilder()
+    if total > 1:
+        prev_idx = (index - 1) % total
+        next_idx = (index + 1) % total
+        builder.button(text="←", callback_data=f"mon_nav:{code}:{prev_idx}")
+        builder.button(text=f"{index + 1} / {total}", callback_data="mon_nav_noop")
+        builder.button(text="→", callback_data=f"mon_nav:{code}:{next_idx}")
+        builder.adjust(3)
+    builder.button(text="📝 Замовити", callback_data=f"order_monument:{code}:{index}")
+    builder.button(text="↩ До списку", callback_data="monuments_list")
+    builder.adjust(3, 1, 1)
+    return builder.as_markup()
+
+
+def _get_photo_files(code: str) -> list[Path]:
+    folder = IMAGES_DIR / code
+    if not folder.exists():
+        return []
+    return sorted(f for f in folder.iterdir() if f.suffix.lower() in (".jpg", ".jpeg", ".png"))
+
+
 @router.message(lambda m: m.text == BTN_PACKAGES)
-async def show_packages(message: Message) -> None:
-    async with get_connection() as db:
-        packages = await models.get_packages(db)
-    if not packages:
-        await message.answer(NO_ITEMS_TEXT)
+async def show_monuments(message: Message) -> None:
+    await message.answer("Оберіть вид памятника:", reply_markup=_monuments_list_keyboard())
+
+
+@router.callback_query(F.data == "monuments_list")
+async def back_to_monuments_list(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.delete()
+    await callback.message.answer("Оберіть вид памятника:", reply_markup=_monuments_list_keyboard())
+
+
+@router.callback_query(F.data == "mon_nav_noop")
+async def nav_noop(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("monument:"))
+async def show_monument_photos(callback: CallbackQuery) -> None:
+    code = callback.data.split(":")[1]
+    await callback.answer()
+    await _show_photo(callback, code, 0, first=True)
+
+
+@router.callback_query(F.data.startswith("mon_nav:"))
+async def navigate_monument_photos(callback: CallbackQuery) -> None:
+    _, code, idx_str = callback.data.split(":")
+    await callback.answer()
+    await _show_photo(callback, code, int(idx_str), first=False)
+
+
+async def _show_photo(callback: CallbackQuery, code: str, index: int, first: bool) -> None:
+    """Відправляє або оновлює фото памятника з кнопками навігації."""
+    files = _get_photo_files(code)
+    if not files:
+        await callback.message.answer("Фото для цього розділу поки не додані.")
         return
-    await message.answer(
-        "Виготовлення памятників:", reply_markup=packages_keyboard(packages)
-    )
 
+    total = len(files)
+    index = max(0, min(index, total - 1))
+    file_path = files[index]
+    filename = file_path.name
+    name = next((n for n, c in MONUMENTS if c == code), code)
+    caption = f"<b>{code} — {name}</b>\n{index + 1} / {total}"
+    nav_kb = _photo_nav_keyboard(code, index, total)
 
-@router.callback_query(F.data == "catalog:packages")
-async def show_packages_callback(callback: CallbackQuery) -> None:
+    # Беремо file_id з кешу БД якщо є
     async with get_connection() as db:
-        packages = await models.get_packages(db)
-    await callback.message.edit_text(
-        "Виготовлення памятників:", reply_markup=packages_keyboard(packages)
-    )
+        cached_file_id = await models.get_monument_file_id(db, code, filename)
 
+    media_source = cached_file_id if cached_file_id else FSInputFile(str(file_path))
 
-@router.callback_query(F.data.startswith("package:"))
-async def show_package_detail(callback: CallbackQuery) -> None:
-    package_id = int(callback.data.split(":")[1])
-    async with get_connection() as db:
-        pkg = await models.get_package(db, package_id)
-    if not pkg:
-        await callback.answer("Пакет не знайдено.", show_alert=True)
-        return
-    text = (
-        f"<b>{pkg['name']}</b>\n\n"
-        f"{pkg['description']}\n\n"
-        f"💰 Вартість пакету: <b>{pkg['price']:.0f} грн</b>"
-    )
-    await callback.message.edit_text(
-        text, parse_mode="HTML", reply_markup=package_detail_keyboard(package_id)
-    )
+    if first:
+        # Перший показ: видаляємо текстове меню, відправляємо фото
+        await callback.message.delete()
+        sent = await callback.message.answer_photo(
+            photo=media_source,
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=nav_kb,
+        )
+    else:
+        # Навігація: редагуємо існуюче фото
+        sent = await callback.message.edit_media(
+            media=InputMediaPhoto(media=media_source, caption=caption, parse_mode="HTML"),
+            reply_markup=nav_kb,
+        )
+
+    # Зберігаємо file_id після першої відправки з диску
+    if not cached_file_id and sent.photo:
+        new_file_id = sent.photo[-1].file_id
+        async with get_connection() as db:
+            await models.save_monument_file_id(db, code, filename, new_file_id)
+        logger.info("Збережено file_id для %s/%s", code, filename)
+
 
 
 # ---------------------------------------------------------------------------

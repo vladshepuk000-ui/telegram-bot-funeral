@@ -95,6 +95,15 @@ CREATE TABLE IF NOT EXISTS orders (
     updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Кеш file_id фотографій памятників (щоб не завантажувати з диска повторно)
+CREATE TABLE IF NOT EXISTS monument_photos (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    category_code TEXT    NOT NULL,
+    filename      TEXT    NOT NULL,
+    file_id       TEXT,
+    UNIQUE(category_code, filename)
+);
+
 -- Лог зміни статусів
 CREATE TABLE IF NOT EXISTS order_status_log (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

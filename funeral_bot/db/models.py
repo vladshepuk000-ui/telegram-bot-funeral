@@ -104,6 +104,37 @@ async def get_package(db: aiosqlite.Connection, package_id: int) -> Optional[dic
 
 
 # ---------------------------------------------------------------------------
+# Памятники — кеш file_id
+# ---------------------------------------------------------------------------
+
+async def get_monument_file_id(
+    db: aiosqlite.Connection, category_code: str, filename: str
+) -> Optional[str]:
+    """Повертає збережений file_id або None якщо ще не завантажувалось."""
+    async with db.execute(
+        "SELECT file_id FROM monument_photos WHERE category_code = ? AND filename = ?",
+        (category_code, filename),
+    ) as cur:
+        row = await cur.fetchone()
+    return row["file_id"] if row else None
+
+
+async def save_monument_file_id(
+    db: aiosqlite.Connection, category_code: str, filename: str, file_id: str
+) -> None:
+    """Зберігає або оновлює file_id після першої відправки фото."""
+    await db.execute(
+        """
+        INSERT INTO monument_photos (category_code, filename, file_id)
+        VALUES (?, ?, ?)
+        ON CONFLICT(category_code, filename) DO UPDATE SET file_id = excluded.file_id
+        """,
+        (category_code, filename, file_id),
+    )
+    await db.commit()
+
+
+# ---------------------------------------------------------------------------
 # Замовлення
 # ---------------------------------------------------------------------------
 

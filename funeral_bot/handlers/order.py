@@ -20,6 +20,18 @@ router = Router()
 # Валідація українського номера телефону
 PHONE_RE = re.compile(r"^(\+?380|0)\d{9}$")
 
+MONUMENT_NAMES = {
+    "DE": "Дитячі ексклюзивні",
+    "DS": "Дитячі класичні",
+    "DK": "Дитячі комбіновані",
+    "OE": "Одинарні ексклюзивні",
+    "OS": "Одинарні класичні",
+    "OK": "Одинарні комбіновані",
+    "PE": "Подвійні ексклюзивні",
+    "PS": "Подвійні класичні",
+    "PK": "Подвійні комбіновані",
+}
+
 _MENU_BUTTONS = {BTN_ORDER, BTN_CATALOG, BTN_PACKAGES, BTN_EMERGENCY, BTN_STATUS}
 
 
@@ -124,6 +136,19 @@ async def order_package(callback: CallbackQuery, state: FSMContext) -> None:
     await _start_order_flow(callback, state, package_id=package_id)
 
 
+@router.callback_query(F.data.startswith("order_monument:"))
+async def order_monument(callback: CallbackQuery, state: FSMContext) -> None:
+    _, code, idx_str = callback.data.split(":")
+    monument_name = MONUMENT_NAMES.get(code, code)
+    await callback.answer()
+    await _start_order_flow(
+        callback, state,
+        monument_code=code,
+        monument_name=monument_name,
+        monument_photo_index=int(idx_str) + 1,  # зберігаємо номер фото для менеджера
+    )
+
+
 # ---------------------------------------------------------------------------
 # Крок 1: Згода на обробку персональних даних
 # ---------------------------------------------------------------------------
@@ -211,11 +236,16 @@ async def process_city(message: Message, state: FSMContext) -> None:
     await state.update_data(order_id=order_id)
     await state.set_state(OrderForm.waiting_for_confirmation)
 
+    item_summary = ""
+    if data.get("monument_name"):
+        item_summary = f"🪨 Памятник: {data['monument_name']}, фото №{data.get('monument_photo_index', '?')}\n"
+
     summary = (
         "📋 <b>Перевірте ваші дані:</b>\n\n"
         f"👤 Ім'я: {data['client_name']}\n"
         f"📞 Телефон: {data['client_phone']}\n"
-        f"📍 Населений пункт: {city}\n\n"
+        f"📍 Населений пункт: {city}\n"
+        f"{item_summary}\n"
         "Підтверджуєте замовлення?"
     )
     await message.answer(
@@ -241,6 +271,7 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext, bot: Bot) ->
             return
         await models.update_order_status(db, order_id, "confirmed")
 
+    fsm_data = await state.get_data()
     await state.clear()
 
     await callback.message.edit_text(
@@ -252,13 +283,19 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext, bot: Bot) ->
     )
     await callback.message.answer("Головне меню:", reply_markup=main_menu)
 
-    # Сповіщення менеджеру — поля відповідають колонкам таблиці orders
+    # Сповіщення менеджеру
+    monument_line = ""
+    if fsm_data.get("monument_name"):
+        monument_line = (
+            f"🪨 Памятник: {fsm_data['monument_name']} ({fsm_data.get('monument_code', '')}), "
+            f"фото №{fsm_data.get('monument_photo_index', '?')}\n"
+        )
     manager_text = MANAGER_ORDER_TEXT.format(
         order_id=order_id,
         name=order["client_name"],
         phone=order["client_phone"],
         city=order["client_city"],
-        item_line=_format_item_line(order),
+        item_line=monument_line or _format_item_line(order),
         client_id=order["client_id"],
     )
     try:
