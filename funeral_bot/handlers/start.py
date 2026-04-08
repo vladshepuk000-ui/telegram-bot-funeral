@@ -8,7 +8,6 @@ from aiogram.types import Message
 from db.database import get_connection
 from db.models import get_or_create_client
 from keyboards.main_menu import main_menu
-from config import settings
 
 logger = logging.getLogger(__name__)
 router = Router()

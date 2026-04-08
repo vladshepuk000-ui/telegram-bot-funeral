@@ -339,7 +339,9 @@ async def contact_phone(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "catalog:back")
 async def catalog_back(callback: CallbackQuery) -> None:
-    await show_catalog_menu.__wrapped__(callback.message) if hasattr(show_catalog_menu, "__wrapped__") else None
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📝 Оформити замовлення", callback_data="order_burial")
     await callback.message.edit_text(
-        "Оберіть розділ каталогу:", reply_markup=_catalog_section_kb()
+        BURIAL_INFO_TEXT, parse_mode="HTML", reply_markup=builder.as_markup()
     )

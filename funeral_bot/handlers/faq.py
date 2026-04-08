@@ -3,7 +3,7 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from keyboards.main_menu import BTN_FAQ
+BTN_FAQ = "❓ FAQ"  # кнопка не додана в меню — при потребі додати в main_menu.py
 
 router = Router()
 

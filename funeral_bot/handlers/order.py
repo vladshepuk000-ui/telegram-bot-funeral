@@ -14,7 +14,7 @@ from keyboards.order_kb import (
     burial_extras_keyboard, BURIAL_EXTRAS, BURIAL_EXTRAS_FROM,
     installation_extras_keyboard, INSTALLATION_EXTRAS, INSTALLATION_EXTRAS_FROM,
 )
-from keyboards.main_menu import BTN_ORDER, BTN_CATALOG, BTN_PACKAGES, BTN_EMERGENCY, BTN_STATUS, main_menu
+from keyboards.main_menu import BTN_ORDER, BTN_CATALOG, BTN_PACKAGES, BTN_EMERGENCY, BTN_STATUS, BTN_CONTACTS, main_menu
 from states.order_states import OrderForm
 from config import settings
 
@@ -36,7 +36,7 @@ MONUMENT_NAMES = {
     "PK": "Подвійні комбіновані",
 }
 
-_MENU_BUTTONS = {BTN_ORDER, BTN_CATALOG, BTN_PACKAGES, BTN_EMERGENCY, BTN_STATUS}
+_MENU_BUTTONS = {BTN_ORDER, BTN_CATALOG, BTN_PACKAGES, BTN_EMERGENCY, BTN_STATUS, BTN_CONTACTS}
 
 
 @router.message(StateFilter(OrderForm), F.text.in_(_MENU_BUTTONS))

@@ -142,7 +142,8 @@ async def test_interrupt_at_confirmation_cancels_pending_order():
     async with aiosqlite.connect(":memory:") as conn:
         conn.row_factory = aiosqlite.Row
         await conn.execute("PRAGMA foreign_keys = ON")
-        await conn.executescript(_SCHEMA)
+        for stmt in _SCHEMA:
+            await conn.execute(stmt)
         await conn.commit()
 
         uid = 7001
