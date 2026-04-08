@@ -10,7 +10,6 @@ from db.database import get_connection
 from db import models
 from keyboards.main_menu import BTN_CATALOG, BTN_PACKAGES, BTN_ORDER
 from keyboards.catalog_kb import (
-    services_keyboard,
     categories_keyboard,
     products_keyboard,
     product_detail_keyboard,
@@ -31,63 +30,89 @@ NO_ITEMS_TEXT = "Наразі в каталозі немає доступних 
 # Каталог послуг
 # ---------------------------------------------------------------------------
 
+BURIAL_INFO_TEXT = (
+    "🕊️ <b>Комплекс послуг з поховання</b>\n\n"
+    "📦 <b>Базовий пакет — від 8 000 грн</b>\n"
+    "• <b>Транспортування:</b> Перевезення тіла з дому безпосередньо до місця поховання.\n"
+    "• <b>Підготовка місця:</b> Професійне викопування та засипання могили.\n\n"
+    "➕ <b>Додаткові послуги:</b>\n\n"
+    "🚐 <b>Транспортні послуги (Морг):</b>\n"
+    "• Перевезення з дому до моргу або з моргу до місця поховання/додому — +500 грн.\n\n"
+    "🏛️ <b>Облаштування місця прощання:</b>\n"
+    "• Повний комплект (захисний намет + ритуальні столики та підставки) — 500 грн.\n\n"
+    "🛠️ <b>Демонтаж та підготовка ділянки:</b>\n"
+    "• Демонтаж старих елементів: Прибирання столиків, лавок чи інших конструкцій — від 500 грн.\n"
+    "• Розчищення місця: Спилювання та видалення дерев, чагарників — від 800 грн.\n\n"
+    "Для замовлення або консультації звертайтесь до адміністратора."
+)
+
+
 @router.message(lambda m: m.text == BTN_CATALOG)
 async def show_catalog_menu(message: Message) -> None:
-    await message.answer(
-        "Оберіть розділ каталогу:",
-        reply_markup=_catalog_section_kb(),
-    )
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📝 Оформити замовлення", callback_data="order_burial")
+    await message.answer(BURIAL_INFO_TEXT, parse_mode="HTML", reply_markup=builder.as_markup())
+
+
+INSTALLATION_CAPTION = (
+    "🪦 <b>Встановлення пам'ятників</b>\n\n"
+    "🏗️ <b>Стандартна установка — від 8 000 грн</b>\n"
+    "(Розміри: 1.20м x 1.60м, товщина 15 см. Включає підготовку та монтаж).\n\n"
+    "🛠️ <b>Додаткові роботи:</b>\n"
+    "• Демонтаж: від 1 000 грн.\n"
+    "• Тротуарна плитка (фото 1-2): від 3 000 грн.\n"
+    "• Облицювальна плитка (фото 3-4): від 8 000 грн.\n\n"
+    "На фото представлені наші роботи з укладання різних видів плитки."
+)
+
+def _installation_photos() -> list[Path]:
+    folder = IMAGES_DIR / "plitky"
+    if not folder.exists():
+        return []
+    files = sorted(folder.iterdir(), key=lambda f: f.name)
+    # тротуарна першими, потім обліцовочна, решта в кінці
+    trot = [f for f in files if "тратуарна" in f.name.lower() or "тротуарна" in f.name.lower()]
+    oblic = [f for f in files if "обліц" in f.name.lower() or "облиц" in f.name.lower()]
+    rest = [f for f in files if f not in trot and f not in oblic]
+    return trot + oblic + rest
 
 
 @router.message(lambda m: m.text == BTN_ORDER)
 async def show_installation_menu(message: Message) -> None:
-    await message.answer(
-        "Встановлення памятників:",
-        reply_markup=_catalog_section_kb(),
-    )
-
-
-def _catalog_section_kb():
     from aiogram.utils.keyboard import InlineKeyboardBuilder
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🕊 Послуги", callback_data="catalog:services")
-    builder.button(text="🛒 Товари", callback_data="catalog:categories")
-    builder.adjust(2)
-    return builder.as_markup()
+    from aiogram.types import InputMediaPhoto, FSInputFile
 
+    photos = _installation_photos()
 
-@router.callback_query(F.data == "catalog:services")
-async def show_services(callback: CallbackQuery) -> None:
-    async with get_connection() as db:
-        services = await models.get_services(db)
-    if not services:
-        await callback.message.edit_text(NO_ITEMS_TEXT)
-        return
-    await callback.message.edit_text(
-        "Наші послуги:", reply_markup=services_keyboard(services)
-    )
-
-
-@router.callback_query(F.data.startswith("service:"))
-async def show_service_detail(callback: CallbackQuery) -> None:
-    service_id = int(callback.data.split(":")[1])
-    async with get_connection() as db:
-        svc = await models.get_service(db, service_id)
-    if not svc:
-        await callback.answer("Послуга не знайдена.", show_alert=True)
+    if not photos:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="📝 Оформити замовлення", callback_data="order_installation")
+        await message.answer(INSTALLATION_CAPTION, parse_mode="HTML", reply_markup=builder.as_markup())
         return
 
-    text = (
-        f"<b>{svc['name']}</b>\n\n"
-        f"{svc['description']}\n\n"
-        f"💰 Вартість: <b>{svc['price']:.0f} грн</b>"
-    )
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    # Перше фото — з підписом і кнопкою, решта без підпису (MediaGroup не підтримує кнопки)
+    # Відправляємо альбом, потім окремо кнопку
+    media = []
+    for i, path in enumerate(photos):
+        caption = INSTALLATION_CAPTION if i == 0 else None
+        media.append(InputMediaPhoto(
+            media=FSInputFile(str(path)),
+            caption=caption,
+            parse_mode="HTML" if i == 0 else None,
+        ))
+
+    sent = await message.answer_media_group(media=media)
+
+    # Зберігаємо file_id для наступних відправок
+    async with get_connection() as db:
+        for path, msg in zip(photos, sent):
+            if msg.photo:
+                await models.save_monument_file_id(db, "plitky", path.name, msg.photo[-1].file_id)
+
     builder = InlineKeyboardBuilder()
-    builder.button(text="📝 Замовити послугу", callback_data=f"order_service:{service_id}")
-    builder.button(text="⬅️ До послуг", callback_data="catalog:services")
-    builder.adjust(1)
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
+    builder.button(text="📝 Оформити замовлення", callback_data="order_installation")
+    await message.answer("Для замовлення:", reply_markup=builder.as_markup())
 
 
 # ---------------------------------------------------------------------------

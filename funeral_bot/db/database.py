@@ -34,87 +34,72 @@ async def get_connection() -> AsyncGenerator[aiosqlite.Connection, None]:
 # Схема БД
 # ---------------------------------------------------------------------------
 
-_SCHEMA = """
--- Клієнти
-CREATE TABLE IF NOT EXISTS clients (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    telegram_id   INTEGER UNIQUE NOT NULL,
-    consent_given INTEGER NOT NULL DEFAULT 0,
-    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Послуги агентства
-CREATE TABLE IF NOT EXISTS services (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    name        TEXT    NOT NULL,
-    description TEXT    NOT NULL DEFAULT '',
-    price       REAL    NOT NULL DEFAULT 0,
-    is_active   INTEGER NOT NULL DEFAULT 1
-);
-
--- Категорії товарів
-CREATE TABLE IF NOT EXISTS categories (
-    id   INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT    NOT NULL UNIQUE
-);
-
--- Товари каталогу
-CREATE TABLE IF NOT EXISTS products (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    category_id   INTEGER NOT NULL REFERENCES categories(id),
-    name          TEXT    NOT NULL,
-    description   TEXT    NOT NULL DEFAULT '',
-    price         REAL    NOT NULL DEFAULT 0,
-    is_custom     INTEGER NOT NULL DEFAULT 0,
-    lead_days     INTEGER,
-    photo_file_id TEXT,
-    is_active     INTEGER NOT NULL DEFAULT 1
-);
-
--- Готові пакети
-CREATE TABLE IF NOT EXISTS packages (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    name        TEXT    NOT NULL,
-    description TEXT    NOT NULL DEFAULT '',
-    price       REAL    NOT NULL DEFAULT 0,
-    is_active   INTEGER NOT NULL DEFAULT 1
-);
-
--- Заявки
-CREATE TABLE IF NOT EXISTS orders (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    client_id    INTEGER NOT NULL,
-    client_name  TEXT    NOT NULL,
-    client_phone TEXT    NOT NULL,
-    client_city  TEXT    NOT NULL,
-    service_id   INTEGER,
-    product_id   INTEGER,
-    package_id   INTEGER,
-    status       TEXT    NOT NULL DEFAULT 'pending',
-    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Кеш file_id фотографій памятників (щоб не завантажувати з диска повторно)
-CREATE TABLE IF NOT EXISTS monument_photos (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    category_code TEXT    NOT NULL,
-    filename      TEXT    NOT NULL,
-    file_id       TEXT,
-    UNIQUE(category_code, filename)
-);
-
--- Лог зміни статусів
-CREATE TABLE IF NOT EXISTS order_status_log (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    order_id   INTEGER NOT NULL REFERENCES orders(id),
-    old_status TEXT,
-    new_status TEXT    NOT NULL,
-    changed_by INTEGER,
-    note       TEXT,
-    changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-"""
+_SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS clients (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_id   INTEGER UNIQUE NOT NULL,
+        consent_given INTEGER NOT NULL DEFAULT 0,
+        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""",
+    """CREATE TABLE IF NOT EXISTS services (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        name        TEXT    NOT NULL,
+        description TEXT    NOT NULL DEFAULT '',
+        price       REAL    NOT NULL DEFAULT 0,
+        is_active   INTEGER NOT NULL DEFAULT 1
+    )""",
+    """CREATE TABLE IF NOT EXISTS categories (
+        id   INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT    NOT NULL UNIQUE
+    )""",
+    """CREATE TABLE IF NOT EXISTS products (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        category_id   INTEGER NOT NULL REFERENCES categories(id),
+        name          TEXT    NOT NULL,
+        description   TEXT    NOT NULL DEFAULT '',
+        price         REAL    NOT NULL DEFAULT 0,
+        is_custom     INTEGER NOT NULL DEFAULT 0,
+        lead_days     INTEGER,
+        photo_file_id TEXT,
+        is_active     INTEGER NOT NULL DEFAULT 1
+    )""",
+    """CREATE TABLE IF NOT EXISTS packages (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        name        TEXT    NOT NULL,
+        description TEXT    NOT NULL DEFAULT '',
+        price       REAL    NOT NULL DEFAULT 0,
+        is_active   INTEGER NOT NULL DEFAULT 1
+    )""",
+    """CREATE TABLE IF NOT EXISTS orders (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id    INTEGER NOT NULL,
+        client_name  TEXT    NOT NULL,
+        client_phone TEXT    NOT NULL,
+        client_city  TEXT    NOT NULL,
+        service_id   INTEGER,
+        product_id   INTEGER,
+        package_id   INTEGER,
+        status       TEXT    NOT NULL DEFAULT 'pending',
+        created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""",
+    """CREATE TABLE IF NOT EXISTS monument_photos (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        category_code TEXT    NOT NULL,
+        filename      TEXT    NOT NULL,
+        file_id       TEXT,
+        UNIQUE(category_code, filename)
+    )""",
+    """CREATE TABLE IF NOT EXISTS order_status_log (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id   INTEGER NOT NULL REFERENCES orders(id),
+        old_status TEXT,
+        new_status TEXT    NOT NULL,
+        changed_by INTEGER,
+        note       TEXT,
+        changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""",
+]
 
 # Міграції: додаємо колонки, яких може не бути в існуючій БД
 _MIGRATIONS = [
@@ -152,19 +137,22 @@ _SEED = [
 async def _add_column_if_missing(
     db: aiosqlite.Connection, table: str, column: str, definition: str
 ) -> None:
-    """Додає колонку, якщо вона ще не існує (ігнорує помилку якщо є)."""
-    try:
+    """Додає колонку лише якщо її ще немає — без винятків."""
+    async with db.execute(f"PRAGMA table_info({table})") as cur:
+        existing = [row[1] for row in await cur.fetchall()]
+    if column not in existing:
         await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-    except Exception:
-        pass  # колонка вже є — нічого не робимо
+        await db.commit()
 
 
 async def init_db() -> None:
     """Створює таблиці, запускає міграції, додає тестові дані."""
     db = await get_db()
 
-    # Створюємо таблиці
-    await db.executescript(_SCHEMA)
+    # Створюємо таблиці (по одному оператору — executescript не сумісний з aiosqlite)
+    for stmt in _SCHEMA:
+        await db.execute(stmt)
+    await db.commit()
 
     # Міграції для існуючих БД
     for table, column, definition in _MIGRATIONS:

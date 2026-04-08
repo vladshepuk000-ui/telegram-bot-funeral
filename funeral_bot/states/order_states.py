@@ -6,6 +6,12 @@ class OrderForm(StatesGroup):
     # Крок 1: підтвердження згоди на обробку персональних даних
     waiting_for_consent = State()
 
+    # Крок для вибору додаткових послуг поховання
+    waiting_for_extras = State()
+
+    # Крок для вибору додаткових послуг встановлення пам'ятників
+    waiting_for_inst_extras = State()
+
     # Кроки збору контактних даних
     waiting_for_name  = State()
     waiting_for_phone = State()
