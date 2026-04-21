@@ -4,6 +4,7 @@ from aiogram.fsm.state import State, StatesGroup
 class OrderForm(StatesGroup):
     choosing_product   = State()
     choosing_quantity  = State()
+    viewing_cart       = State()
     entering_phone     = State()
     choosing_delivery  = State()
     entering_address   = State()

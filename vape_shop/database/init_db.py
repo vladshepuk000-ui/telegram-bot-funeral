@@ -127,7 +127,8 @@ async def create_tables():
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 customer_id INTEGER REFERENCES customers(id),
                 date        DATE NOT NULL,
-                count       INTEGER DEFAULT 0
+                count       INTEGER DEFAULT 0,
+                UNIQUE(customer_id, date)
             )
         """)
 

@@ -8,6 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from database.queries import get_waitlist_for_product, clear_waitlist_for_product
+from bot.handlers.review import send_review_request
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -131,6 +132,18 @@ async def cmd_setstatus(message: Message):
             )
         except Exception as e:
             logger.error(f"Не вдалось надіслати клієнту: {e}")
+
+        # Запит відгуку при статусі "done"
+        if new_status == "done":
+            try:
+                review_text, review_kb = send_review_request(int(order_id))
+                await message.bot.send_message(
+                    order['telegram_id'],
+                    review_text,
+                    reply_markup=review_kb
+                )
+            except Exception as e:
+                logger.error(f"Не вдалось надіслати запит відгуку: {e}")
 
 
 # ── /addproduct — додати товар ──

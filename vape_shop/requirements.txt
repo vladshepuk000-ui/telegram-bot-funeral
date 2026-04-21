@@ -20,8 +20,7 @@ python-multipart==0.0.26
 passlib==1.7.4
 python-jose==3.5.0
 
-# AI-асистент (Google Gemini — безкоштовно)
-google-generativeai==0.7.2
+# AI-асистент (Groq — безкоштовно, без картки)
 
 # Парсинг тексту постів каналу
 regex==2026.4.4

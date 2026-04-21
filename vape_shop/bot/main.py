@@ -8,7 +8,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-from bot.handlers import start, catalog, faq, contact, order, admin, repeat_order, waitlist, edit_product, broadcast
+from bot.handlers import start, catalog, faq, contact, order, admin, repeat_order, waitlist, edit_product, broadcast, review, ai_chat
 from bot.scheduler import setup_scheduler
 from database.init_db import create_tables
 
@@ -49,6 +49,8 @@ async def main():
     dp.include_router(waitlist.router)
     dp.include_router(edit_product.router)
     dp.include_router(broadcast.router)
+    dp.include_router(review.router)
+    dp.include_router(ai_chat.router)  # останній — ловить все що не підійшло іншим
 
     # Запустити планувальник
     scheduler = setup_scheduler(bot)

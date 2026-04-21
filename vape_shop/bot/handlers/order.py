@@ -17,7 +17,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "vape_shop.db").replace("sqlite:///", "
 PHONE_RE = re.compile(r"^(\+?3?8?0\d{9}|0\d{9})$")
 
 
-# ── Клавіатура підтвердження ──
+# ── Клавіатури ──
 def confirm_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Підтвердити", callback_data="order_confirm")],
@@ -60,6 +60,25 @@ def payment_method_keyboard(delivery: str = "nova_poshta") -> InlineKeyboardMark
     ])
 
 
+def cart_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Додати ще товар",      callback_data="cart_add_more")],
+        [InlineKeyboardButton(text="✅ Оформити замовлення",  callback_data="cart_checkout")],
+        [InlineKeyboardButton(text="❌ Скасувати",            callback_data="order_cancel")],
+    ])
+
+
+def format_cart(cart: list) -> str:
+    lines = ["🛒 <b>Твій кошик:</b>\n"]
+    total = 0
+    for item in cart:
+        subtotal = item['price'] * item['quantity']
+        total += subtotal
+        lines.append(f"• {item['name']} × {item['quantity']} шт — {subtotal} грн")
+    lines.append(f"\n💰 Разом: <b>{total} грн</b>")
+    return "\n".join(lines)
+
+
 # ── /cancel — скидає FSM ──
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext):
@@ -88,12 +107,13 @@ async def my_orders(message: Message):
         db.row_factory = aiosqlite.Row
         async with db.execute("""
             SELECT o.id, o.status, o.total_price, o.created_at,
-                   p.name as product_name, oi.quantity
+                   GROUP_CONCAT(p.name || ' x' || oi.quantity, ', ') as items_summary
             FROM orders o
             LEFT JOIN customers c ON o.customer_id = c.id
             LEFT JOIN order_items oi ON oi.order_id = o.id
             LEFT JOIN products p ON oi.product_id = p.id
             WHERE c.telegram_id = ?
+            GROUP BY o.id
             ORDER BY o.created_at DESC
             LIMIT 5
         """, (message.from_user.id,)) as cursor:
@@ -109,7 +129,7 @@ async def my_orders(message: Message):
         date = o['created_at'][:10] if o['created_at'] else "—"
         text += (
             f"#{o['id']} — {status}\n"
-            f"{o['product_name']} x{o['quantity']} — {o['total_price']} грн\n"
+            f"{o['items_summary'] or '—'} — {o['total_price']} грн\n"
             f"📅 {date}\n\n"
         )
 
@@ -126,6 +146,7 @@ async def order_from_catalog(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Товар не знайдено", show_alert=True)
         return
 
+    # Зберігаємо поточний товар, не чіпаємо cart
     await state.update_data(
         product_id=product_id,
         product_name=product['name'],
@@ -164,7 +185,7 @@ async def choose_product(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-# ── Кількість ──
+# ── Кількість → додати до кошика ──
 @router.message(OrderForm.choosing_quantity)
 async def choose_quantity(message: Message, state: FSMContext):
     if not message.text or not message.text.isdigit() or int(message.text) < 1:
@@ -173,44 +194,85 @@ async def choose_quantity(message: Message, state: FSMContext):
 
     quantity = int(message.text)
     data = await state.get_data()
+    cart = data.get('cart', [])
 
-    # Перевірити наявність
+    # Перевірити наявність з урахуванням вже доданих до кошика
     product = await get_product_by_id(data['product_id'])
-    if not product or product['stock'] < quantity:
-        available = product['stock'] if product else 0
+    already_in_cart = sum(i['quantity'] for i in cart if i['product_id'] == data['product_id'])
+    available = (product['stock'] if product else 0) - already_in_cart
+
+    if not product or available < quantity:
         await message.answer(
-            f"На жаль, доступно лише <b>{available} шт</b>.\n"
+            f"На жаль, доступно лише <b>{max(0, available)} шт</b>.\n"
             "Введи меншу кількість:",
             reply_markup=cancel_keyboard()
         )
         return
 
-    total = quantity * data['product_price']
+    # Якщо такий товар вже є в кошику — збільшуємо кількість
+    for item in cart:
+        if item['product_id'] == data['product_id']:
+            item['quantity'] += quantity
+            break
+    else:
+        cart.append({
+            'product_id': data['product_id'],
+            'name': data['product_name'],
+            'price': data['product_price'],
+            'quantity': quantity,
+        })
 
-    await state.update_data(quantity=quantity, total=total)
-    await state.set_state(OrderForm.entering_phone)
+    total = sum(i['price'] * i['quantity'] for i in cart)
+    await state.update_data(cart=cart, total=total)
+    await state.set_state(OrderForm.viewing_cart)
+
     await message.answer(
-        f"Кількість: {quantity} шт — {total} грн\n\n"
+        format_cart(cart) + "\n\nДодати ще товар або оформити?",
+        reply_markup=cart_keyboard()
+    )
+
+
+# ── Додати ще товар до кошика ──
+@router.callback_query(F.data == "cart_add_more")
+async def add_more_to_cart(callback: CallbackQuery, state: FSMContext):
+    async with aiosqlite.connect(DATABASE_URL) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id, name, price, stock FROM products WHERE is_active = 1 AND stock > 0 ORDER BY category"
+        ) as cursor:
+            products = await cursor.fetchall()
+
+    if not products:
+        await callback.answer("Немає доступних товарів", show_alert=True)
+        return
+
+    buttons = [
+        [InlineKeyboardButton(
+            text=f"{p['name']} — {p['price']} грн",
+            callback_data=f"buy_{p['id']}"
+        )]
+        for p in products
+    ]
+    buttons.append([InlineKeyboardButton(text="❌ Скасувати", callback_data="order_cancel")])
+
+    await state.set_state(OrderForm.choosing_product)
+    await callback.message.answer(
+        "Обери наступний товар:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+    )
+    await callback.answer()
+
+
+# ── Перейти до оформлення ──
+@router.callback_query(F.data == "cart_checkout")
+async def cart_checkout(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(OrderForm.entering_phone)
+    await callback.message.answer(
         "Введи номер телефону:\n"
         "<i>0981234567 або +380981234567</i>",
         reply_markup=cancel_keyboard()
     )
-
-
-# ── Адреса ──
-@router.message(OrderForm.entering_address)
-async def enter_address(message: Message, state: FSMContext):
-    if not message.text or len(message.text.strip()) < 5:
-        await message.answer("Введи повну адресу (місто + відділення НП)", reply_markup=cancel_keyboard())
-        return
-
-    await state.update_data(address=message.text.strip())
-    await state.set_state(OrderForm.entering_notes)
-    await message.answer(
-        "Є коментар до замовлення? (наприклад: смак, міцність нікотину)\n"
-        "Або натисни кнопку щоб пропустити.",
-        reply_markup=skip_keyboard()
-    )
+    await callback.answer()
 
 
 # ── Телефон ──
@@ -265,6 +327,22 @@ async def choose_delivery(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+# ── Адреса ──
+@router.message(OrderForm.entering_address)
+async def enter_address(message: Message, state: FSMContext):
+    if not message.text or len(message.text.strip()) < 5:
+        await message.answer("Введи повну адресу (місто + відділення НП)", reply_markup=cancel_keyboard())
+        return
+
+    await state.update_data(address=message.text.strip())
+    await state.set_state(OrderForm.entering_notes)
+    await message.answer(
+        "Є коментар до замовлення? (наприклад: смак, міцність нікотину)\n"
+        "Або натисни кнопку щоб пропустити.",
+        reply_markup=skip_keyboard()
+    )
+
+
 # ── Пропустити коментар ──
 @router.callback_query(F.data == "order_skip_notes")
 async def skip_notes(callback: CallbackQuery, state: FSMContext):
@@ -305,6 +383,7 @@ async def show_confirmation(message: Message, state: FSMContext):
     data = await state.get_data()
     method = data.get('payment_method', 'card')
     delivery = data.get('delivery', 'nova_poshta')
+    cart = data.get('cart', [])
 
     if method == 'card':
         card = os.getenv("PAYMENT_CARD", "").strip()
@@ -317,11 +396,15 @@ async def show_confirmation(message: Message, state: FSMContext):
 
     delivery_text = "🏠 Самовивіз" if delivery == "pickup" else f"🚚 Нова Пошта: {data['address']}"
 
+    # Список товарів
+    items_text = ""
+    for item in cart:
+        items_text += f"• {item['name']} × {item['quantity']} — {item['price'] * item['quantity']} грн\n"
+
     text = (
         "📋 <b>Перевір замовлення:</b>\n\n"
-        f"Товар: {data['product_name']}\n"
-        f"Кількість: {data['quantity']} шт\n"
-        f"Сума: {data['total']} грн\n"
+        f"{items_text}"
+        f"💰 Разом: {data['total']} грн\n\n"
         f"Доставка: {delivery_text}\n"
         f"Телефон: {data['phone']}\n"
     )
@@ -346,17 +429,15 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     user = callback.from_user
     method = data.get('payment_method', 'card')
+    cart = data.get('cart', [])
 
     async with aiosqlite.connect(DATABASE_URL) as db:
-        # Знайти customer_id
         async with db.execute(
             "SELECT id FROM customers WHERE telegram_id = ?", (user.id,)
         ) as cursor:
             row = await cursor.fetchone()
             customer_id = row[0] if row else None
 
-        # Картка — чекаємо скріншот, залишок не чіпаємо
-        # Накладений / Готівка — одразу "new", залишок зменшуємо
         initial_status = "awaiting_payment" if method == "card" else "new"
 
         cursor = await db.execute(
@@ -365,17 +446,18 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
         )
         order_id = cursor.lastrowid
 
-        await db.execute(
-            "INSERT INTO order_items (order_id, product_id, quantity, price_at_order) VALUES (?, ?, ?, ?)",
-            (order_id, data['product_id'], data['quantity'], data['product_price'])
-        )
-
-        # Зменшуємо залишок для накладеного та готівки
-        if method != "card":
+        # Зберегти всі позиції кошика
+        for item in cart:
             await db.execute(
-                "UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?",
-                (data['quantity'], data['product_id'])
+                "INSERT INTO order_items (order_id, product_id, quantity, price_at_order) VALUES (?, ?, ?, ?)",
+                (order_id, item['product_id'], item['quantity'], item['price'])
             )
+            # Зменшуємо залишок для накладеного та готівки
+            if method != "card":
+                await db.execute(
+                    "UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?",
+                    (item['quantity'], item['product_id'])
+                )
 
         await db.execute(
             "UPDATE customers SET total_orders = total_orders + 1, last_order = CURRENT_TIMESTAMP WHERE id = ?",
@@ -392,18 +474,18 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
     # Повідомлення адміну
     admin_ids = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
     payment_label = PAYMENT_LABELS.get(method, method)
-
     delivery = data.get('delivery', 'nova_poshta')
     delivery_label = "🏠 Самовивіз" if delivery == "pickup" else f"🚚 НП: {data['address']}"
+
+    items_summary = "\n".join(f"• {i['name']} × {i['quantity']} — {i['price'] * i['quantity']} грн" for i in cart)
 
     for admin_id in admin_ids:
         try:
             await callback.bot.send_message(
                 admin_id,
                 f"🛒 <b>НОВЕ ЗАМОВЛЕННЯ #{order_id}</b>\n\n"
-                f"Товар: {data['product_name']}\n"
-                f"Кількість: {data['quantity']} шт\n"
-                f"Сума: {data['total']} грн\n"
+                f"{items_summary}\n"
+                f"💰 Разом: {data['total']} грн\n\n"
                 f"Доставка: {delivery_label}\n"
                 f"Телефон: {data['phone']}\n"
                 f"Коментар: {data.get('notes', '—')}\n"
@@ -414,7 +496,6 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             logger.error(f"Не вдалось надіслати адміну {admin_id}: {e}")
 
     if method == 'card':
-        # Просимо скріншот оплати
         card = os.getenv("PAYMENT_CARD", "").strip()
         payment_name = os.getenv("PAYMENT_NAME", "").strip()
         await state.set_state(OrderForm.waiting_screenshot)
@@ -426,9 +507,7 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             f"Отримувач: {payment_name}\n"
             f"Сума: <b>{data['total']} грн</b>\n\n"
             "Після оплати надішли <b>скріншот</b> сюди 👇",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🚫 Скасувати замовлення", callback_data=f"cancel_order_{order_id}")]
-            ])
+            reply_markup=cancel_kb
         )
     elif method == 'cash':
         pickup_address = os.getenv("PICKUP_ADDRESS", "уточніть у продавця")
@@ -441,7 +520,6 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             reply_markup=cancel_kb
         )
     else:
-        # Накладений платіж
         await state.clear()
         await callback.message.answer(
             f"✅ Замовлення #{order_id} прийнято!\n\n"
@@ -462,27 +540,22 @@ async def receive_screenshot(message: Message, state: FSMContext):
 
     async with aiosqlite.connect(DATABASE_URL) as db:
         db.row_factory = aiosqlite.Row
-
-        # Отримати позиції замовлення
         async with db.execute(
             "SELECT product_id, quantity FROM order_items WHERE order_id = ?", (order_id,)
         ) as cursor:
             items = await cursor.fetchall()
 
-        # Зменшити залишок — оплата підтверджена скріншотом
         for item in items:
             await db.execute(
                 "UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?",
                 (item['quantity'], item['product_id'])
             )
 
-        # Змінити статус замовлення на "new" (оплата надійшла, чекає обробки)
         await db.execute(
             "UPDATE orders SET status = 'new' WHERE id = ?", (order_id,)
         )
         await db.commit()
 
-    # Переслати скріншот адміну
     admin_ids = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
     for admin_id in admin_ids:
         try:
@@ -550,7 +623,6 @@ async def cancel_placed_order(callback: CallbackQuery, state: FSMContext):
             )
             return
 
-        # Отримати позиції замовлення
         async with db.execute(
             "SELECT product_id, quantity FROM order_items WHERE order_id = ?", (order_id,)
         ) as cursor:
@@ -560,8 +632,6 @@ async def cancel_placed_order(callback: CallbackQuery, state: FSMContext):
             "UPDATE orders SET status = 'cancelled' WHERE id = ?", (order_id,)
         )
 
-        # Повертаємо залишок лише якщо скріншот вже був надісланий (статус "new")
-        # При "awaiting_payment" залишок ще не зменшувався — нічого повертати
         if order['status'] == "new":
             for item in items:
                 await db.execute(
@@ -571,13 +641,10 @@ async def cancel_placed_order(callback: CallbackQuery, state: FSMContext):
 
         await db.commit()
 
-    # Скинути FSM-стан якщо клієнт скасував під час очікування скріншоту
     await state.clear()
-
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.answer(f"🚫 Замовлення #{order_id} скасовано.")
 
-    # Повідомити адміна
     admin_ids = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
     for admin_id in admin_ids:
         try:
