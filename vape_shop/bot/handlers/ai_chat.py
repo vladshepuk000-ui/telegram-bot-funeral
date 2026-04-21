@@ -179,7 +179,9 @@ async def handle_ai_message(message: Message):
         reply = data["choices"][0]["message"]["content"]
     except Exception as e:
         logger.error(f"Groq API error: {e}")
-        await message.answer(f"⚠️ Помилка: {e}")
+        await message.answer(
+            "⚠️ Не вдалось отримати відповідь. Спробуй ще раз або напиши @Vlad_shepuk"
+        )
         return
 
     # Зберегти відповідь AI

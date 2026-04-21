@@ -3,7 +3,6 @@ import logging
 import aiosqlite
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.fsm.context import FSMContext
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -25,32 +24,42 @@ async def repeat_order(message: Message):
 
         # Знайти останнє замовлення клієнта
         async with db.execute("""
-            SELECT o.id, o.total_price, o.address, o.phone,
-                   p.name as product_name, oi.quantity, oi.price_at_order
+            SELECT o.id, o.total_price, o.address, o.phone
             FROM orders o
             LEFT JOIN customers c ON o.customer_id = c.id
-            LEFT JOIN order_items oi ON oi.order_id = o.id
-            LEFT JOIN products p ON oi.product_id = p.id
-            WHERE c.telegram_id = ?
+            WHERE c.telegram_id = ? AND o.status != 'cancelled'
             ORDER BY o.created_at DESC
             LIMIT 1
         """, (message.from_user.id,)) as cursor:
             order = await cursor.fetchone()
 
-    if not order:
-        await message.answer(
-            "У тебе ще немає замовлень.\n"
-            "Зроби перше замовлення через 📦 Замовити"
-        )
-        return
+        if not order:
+            await message.answer(
+                "У тебе ще немає замовлень.\n"
+                "Перегляни 🛍 Каталог щоб зробити перше!"
+            )
+            return
+
+        # Отримати всі товари цього замовлення
+        async with db.execute("""
+            SELECT p.name, oi.quantity, oi.price_at_order
+            FROM order_items oi
+            LEFT JOIN products p ON oi.product_id = p.id
+            WHERE oi.order_id = ?
+        """, (order['id'],)) as cursor:
+            items = await cursor.fetchall()
+
+    items_text = "\n".join(
+        f"• {i['name']} × {i['quantity']} шт — {i['price_at_order'] * i['quantity']} грн"
+        for i in items
+    )
 
     await message.answer(
         f"🔄 <b>Повторити останнє замовлення?</b>\n\n"
-        f"Товар: {order['product_name']}\n"
-        f"Кількість: {order['quantity']} шт\n"
-        f"Сума: {order['total_price']} грн\n"
-        f"Адреса: {order['address']}\n"
-        f"Телефон: {order['phone']}",
+        f"{items_text}\n\n"
+        f"💰 Сума: {order['total_price']} грн\n"
+        f"📍 Адреса: {order['address']}\n"
+        f"📞 Телефон: {order['phone']}",
         reply_markup=confirm_repeat_keyboard(order['id'])
     )
 
@@ -64,13 +73,8 @@ async def confirm_repeat(callback: CallbackQuery):
 
         # Отримати дані оригінального замовлення
         async with db.execute("""
-            SELECT o.customer_id, o.address, o.phone, o.notes,
-                   oi.product_id, oi.quantity, oi.price_at_order,
-                   p.price as current_price, p.stock, p.name, p.is_active
-            FROM orders o
-            LEFT JOIN order_items oi ON oi.order_id = o.id
-            LEFT JOIN products p ON oi.product_id = p.id
-            WHERE o.id = ?
+            SELECT customer_id, address, phone, notes
+            FROM orders WHERE id = ?
         """, (original_id,)) as cursor:
             orig = await cursor.fetchone()
 
@@ -78,46 +82,69 @@ async def confirm_repeat(callback: CallbackQuery):
             await callback.answer("Замовлення не знайдено", show_alert=True)
             return
 
-        if orig['is_active'] == 0:
-            await callback.answer(
-                f"На жаль, {orig['name']} більше не доступний.",
-                show_alert=True
-            )
-            return
+        # Отримати всі позиції з поточними цінами і залишками
+        async with db.execute("""
+            SELECT oi.product_id, oi.quantity, p.price as current_price,
+                   p.stock, p.name, p.is_active
+            FROM order_items oi
+            LEFT JOIN products p ON oi.product_id = p.id
+            WHERE oi.order_id = ?
+        """, (original_id,)) as cursor:
+            items = await cursor.fetchall()
 
-        if orig['stock'] == 0:
-            await callback.answer(
-                f"На жаль, {orig['name']} зараз немає в наявності.",
-                show_alert=True
-            )
-            return
+        # Перевірити доступність всіх товарів
+        for item in items:
+            if not item['is_active']:
+                await callback.answer(
+                    f"На жаль, '{item['name']}' більше не доступний.",
+                    show_alert=True
+                )
+                return
+            if item['stock'] < item['quantity']:
+                await callback.answer(
+                    f"На жаль, '{item['name']}' зараз недостатньо в наявності "
+                    f"(є {item['stock']} шт).",
+                    show_alert=True
+                )
+                return
 
-        # Використовуємо поточну ціну товару
-        total = orig['quantity'] * orig['current_price']
+        total = sum(i['quantity'] * i['current_price'] for i in items)
 
         # Створити нове замовлення
         cursor = await db.execute(
-            "INSERT INTO orders (customer_id, address, phone, notes, total_price) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO orders (customer_id, address, phone, notes, total_price, status) VALUES (?, ?, ?, ?, ?, 'new')",
             (orig['customer_id'], orig['address'], orig['phone'], orig['notes'], total)
         )
         new_order_id = cursor.lastrowid
 
-        await db.execute(
-            "INSERT INTO order_items (order_id, product_id, quantity, price_at_order) VALUES (?, ?, ?, ?)",
-            (new_order_id, orig['product_id'], orig['quantity'], orig['current_price'])
-        )
+        for item in items:
+            await db.execute(
+                "INSERT INTO order_items (order_id, product_id, quantity, price_at_order) VALUES (?, ?, ?, ?)",
+                (new_order_id, item['product_id'], item['quantity'], item['current_price'])
+            )
+            # Зменшити залишок
+            await db.execute(
+                "UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?",
+                (item['quantity'], item['product_id'])
+            )
+
         await db.execute(
             "UPDATE customers SET total_orders = total_orders + 1, last_order = CURRENT_TIMESTAMP WHERE id = ?",
             (orig['customer_id'],)
         )
         await db.commit()
 
+    items_summary = "\n".join(
+        f"• {i['name']} × {i['quantity']} — {i['quantity'] * i['current_price']} грн"
+        for i in items
+    )
+
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.answer(
         f"✅ Замовлення #{new_order_id} створено!\n\n"
-        f"Сума: {total} грн\n"
-        "Ми зв'яжемось з тобою найближчим часом. Дякуємо! 🙏\n\n"
-        "<i>Якщо замовлення було зроблено випадково — скасуй нижче.</i>",
+        f"{items_summary}\n\n"
+        f"💰 Сума: {total} грн\n"
+        "Ми зв'яжемось для підтвердження. Дякуємо! 🙏",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
                 text="🚫 Скасувати замовлення",
@@ -133,11 +160,10 @@ async def confirm_repeat(callback: CallbackQuery):
             await callback.bot.send_message(
                 admin_id,
                 f"🔄 <b>ПОВТОРНЕ ЗАМОВЛЕННЯ #{new_order_id}</b>\n\n"
-                f"Товар: {orig['name']}\n"
-                f"Кількість: {orig['quantity']} шт\n"
-                f"Сума: {total} грн\n"
-                f"Адреса: {orig['address']}\n"
-                f"Телефон: {orig['phone']}\n"
+                f"{items_summary}\n"
+                f"💰 Сума: {total} грн\n"
+                f"📍 Адреса: {orig['address']}\n"
+                f"📞 Телефон: {orig['phone']}\n"
                 f"Клієнт: @{callback.from_user.username or '—'}"
             )
         except Exception as e:
