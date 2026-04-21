@@ -8,7 +8,8 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-from bot.handlers import start, catalog, faq, contact, order, admin, repeat_order, waitlist, edit_product
+from bot.handlers import start, catalog, faq, contact, order, admin, repeat_order, waitlist, edit_product, broadcast
+from bot.scheduler import setup_scheduler
 from database.init_db import create_tables
 
 load_dotenv()
@@ -47,9 +48,18 @@ async def main():
     dp.include_router(repeat_order.router)
     dp.include_router(waitlist.router)
     dp.include_router(edit_product.router)
+    dp.include_router(broadcast.router)
+
+    # Запустити планувальник
+    scheduler = setup_scheduler(bot)
+    scheduler.start()
+    logger.info("Планувальник запущено.")
 
     logger.info("Бот запускається...")
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        scheduler.shutdown()
 
 
 if __name__ == "__main__":
