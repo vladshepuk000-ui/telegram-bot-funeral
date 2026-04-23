@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Дашборд{% endblock %}
+{% block page_title %}Дашборд{% endblock %}
+
+{% block content %}
+<div class="cards">
+    <div class="card">
+        <div class="card-label">Всього замовлень</div>
+        <div class="card-value">{{ total_orders }}</div>
+    </div>
+    <div class="card">
+        <div class="card-label">Нові замовлення</div>
+        <div class="card-value orange">{{ new_orders }}</div>
+    </div>
+    <div class="card">
+        <div class="card-label">Виручка (done)</div>
+        <div class="card-value green">{{ "%.0f"|format(revenue) }} грн</div>
+    </div>
+    <div class="card">
+        <div class="card-label">Клієнти</div>
+        <div class="card-value">{{ total_customers }}</div>
+    </div>
+    <div class="card">
+        <div class="card-label">Активних товарів</div>
+        <div class="card-value">{{ active_products }}</div>
+    </div>
+    <div class="card">
+        <div class="card-label">Немає в наявності</div>
+        <div class="card-value {% if out_of_stock > 0 %}red{% endif %}">{{ out_of_stock }}</div>
+    </div>
+</div>
+
+<div class="table-wrap">
+    <div class="table-head">
+        <h2>Останні замовлення</h2>
+        <a href="/orders" class="btn btn-ghost btn-sm">Всі замовлення →</a>
+    </div>
+    {% if recent_orders %}
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Клієнт</th>
+                <th>Сума</th>
+                <th>Статус</th>
+                <th>Дата</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for o in recent_orders %}
+            <tr>
+                <td>#{{ o.id }}</td>
+                <td>{{ "@" + o.username if o.username else "id:" + o.telegram_id|string }}</td>
+                <td>{{ "%.0f"|format(o.total_price) }} грн</td>
+                <td><span class="badge badge-{{ o.status }}">{{ o.status }}</span></td>
+                <td class="text-muted">{{ o.created_at[:16] }}</td>
+                <td><a href="/orders/{{ o.id }}" class="btn btn-ghost btn-sm">Деталі</a></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">Замовлень ще немає</div>
+    {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Замовлення{% endblock %}
+{% block page_title %}Замовлення{% endblock %}
+
+{% block content %}
+<div class="filters">
+    <a href="/orders" class="filter-btn {% if not current_status %}active{% endif %}">Всі</a>
+    {% for key, label in status_map.items() %}
+    <a href="/orders?status={{ key }}" class="filter-btn {% if current_status == key %}active{% endif %}">{{ label }}</a>
+    {% endfor %}
+</div>
+
+<div class="table-wrap">
+    <div class="table-head">
+        <h2>{{ orders|length }} замовлень</h2>
+    </div>
+    {% if orders %}
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Клієнт</th>
+                <th>Телефон</th>
+                <th>Сума</th>
+                <th>Статус</th>
+                <th>Дата</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for o in orders %}
+            <tr>
+                <td>#{{ o.id }}</td>
+                <td>{{ "@" + o.username if o.username else "id:" + o.telegram_id|string }}</td>
+                <td class="text-muted">{{ o.phone or "—" }}</td>
+                <td>{{ "%.0f"|format(o.total_price) }} грн</td>
+                <td><span class="badge badge-{{ o.status }}">{{ status_map.get(o.status, o.status) }}</span></td>
+                <td class="text-muted">{{ o.created_at[:16] }}</td>
+                <td><a href="/orders/{{ o.id }}" class="btn btn-ghost btn-sm">Деталі</a></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">Немає замовлень</div>
+    {% endif %}
+</div>
+{% endblock %}

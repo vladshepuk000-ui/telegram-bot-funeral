@@ -1,6 +1,10 @@
+import os
+import aiosqlite
 from aiogram import Router, F
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from database.queries import get_all_products, get_products_by_category, get_product_by_id
+
+DATABASE_URL = os.getenv("DATABASE_URL", "vape_shop.db").replace("sqlite:///", "")
 
 router = Router()
 
@@ -109,16 +113,28 @@ async def show_product(callback):
     )
 
     in_stock = product['stock'] > 0
-    if product['photo_id']:
-        await callback.message.answer_photo(
-            photo=product['photo_id'],
-            caption=text,
-            reply_markup=product_keyboard(product_id, in_stock)
-        )
+    kb = product_keyboard(product_id, in_stock)
+
+    # Отримати всі фото товару
+    async with aiosqlite.connect(DATABASE_URL) as db:
+        async with db.execute(
+            "SELECT photo_id FROM product_photos WHERE product_id = ? ORDER BY position",
+            (product_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+    photos = [r[0] for r in rows]
+
+    # Якщо в product_photos немає — використати старе photo_id
+    if not photos and product['photo_id']:
+        photos = [product['photo_id']]
+
+    if len(photos) > 1:
+        media = [InputMediaPhoto(media=p) for p in photos]
+        await callback.message.answer_media_group(media)
+        await callback.message.answer(text, reply_markup=kb)
+    elif len(photos) == 1:
+        await callback.message.answer_photo(photos[0], caption=text, reply_markup=kb)
     else:
-        await callback.message.edit_text(
-            text,
-            reply_markup=product_keyboard(product_id, in_stock)
-        )
+        await callback.message.answer(text, reply_markup=kb)
 
     await callback.answer()

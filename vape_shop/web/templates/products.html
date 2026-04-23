@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}Товари{% endblock %}
+{% block page_title %}Товари{% endblock %}
+
+{% block content %}
+<div class="table-wrap">
+    <div class="table-head">
+        <h2>{{ products|length }} товарів</h2>
+    </div>
+    {% if products %}
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Назва</th>
+                <th>Категорія</th>
+                <th>Ціна</th>
+                <th>Залишок</th>
+                <th>Статус</th>
+                <th>Дії</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in products %}
+            <tr>
+                <td class="text-muted">{{ p.id }}</td>
+                <td><strong>{{ p.name }}</strong><br><span class="text-muted">{{ (p.description or "")[:50] }}</span></td>
+                <td class="text-muted">{{ categories.get(p.category, p.category) }}</td>
+                <td>{{ "%.0f"|format(p.price) }} грн</td>
+                <td>
+                    {% if p.stock == 0 %}
+                    <span style="color:#ef4444; font-weight:600;">0 шт</span>
+                    {% else %}
+                    {{ p.stock }} шт
+                    {% endif %}
+                </td>
+                <td>
+                    {% if p.is_active %}
+                    <span class="badge badge-confirmed">Активний</span>
+                    {% else %}
+                    <span class="badge badge-cancelled">Прихований</span>
+                    {% endif %}
+                </td>
+                <td style="display:flex; gap:6px; flex-wrap:wrap;">
+                    <button class="btn btn-ghost btn-sm edit-btn"
+                        data-id="{{ p.id }}"
+                        data-name="{{ p.name }}"
+                        data-desc="{{ p.description or '' }}"
+                        data-price="{{ p.price }}"
+                        data-stock="{{ p.stock }}">✏️ Ред.</button>
+                    <button class="btn btn-ghost btn-sm restock-btn"
+                        data-id="{{ p.id }}"
+                        data-name="{{ p.name }}">📦 Поповнити</button>
+                    <form method="post" action="/products/{{ p.id }}/toggle" style="display:inline;">
+                        <button type="submit" class="btn btn-sm {% if p.is_active %}btn-danger{% else %}btn-ghost{% endif %}">
+                            {% if p.is_active %}Сховати{% else %}Показати{% endif %}
+                        </button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">Товарів немає</div>
+    {% endif %}
+</div>
+
+<!-- Модалка редагування -->
+<div class="modal-overlay" id="editModal">
+    <div class="modal">
+        <h3>✏️ Редагувати товар</h3>
+        <form method="post" id="editForm">
+            <div class="form-group">
+                <label>Назва</label>
+                <input type="text" name="name" id="editName" class="form-control" required>
+            </div>
+            <div class="form-group">
+                <label>Опис</label>
+                <textarea name="description" id="editDesc" class="form-control" rows="3"></textarea>
+            </div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                <div class="form-group">
+                    <label>Ціна (грн)</label>
+                    <input type="number" name="price" id="editPrice" class="form-control" step="0.01" required>
+                </div>
+                <div class="form-group">
+                    <label>Залишок (шт)</label>
+                    <input type="number" name="stock" id="editStock" class="form-control" required>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-ghost" onclick="closeModal('editModal')">Скасувати</button>
+                <button type="submit" class="btn btn-primary">Зберегти</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Модалка поповнення -->
+<div class="modal-overlay" id="restockModal">
+    <div class="modal">
+        <h3>📦 Поповнити залишок</h3>
+        <p id="restockName" style="color:#6b7280; margin-bottom:20px;"></p>
+        <form method="post" id="restockForm">
+            <div class="form-group">
+                <label>Кількість для додавання</label>
+                <input type="number" name="quantity" class="form-control" min="1" value="10" required>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-ghost" onclick="closeModal('restockModal')">Скасувати</button>
+                <button type="submit" class="btn btn-primary">Поповнити</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelectorAll('.edit-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+        document.getElementById('editName').value = this.dataset.name;
+        document.getElementById('editDesc').value = this.dataset.desc;
+        document.getElementById('editPrice').value = this.dataset.price;
+        document.getElementById('editStock').value = this.dataset.stock;
+        document.getElementById('editForm').action = '/products/' + this.dataset.id + '/edit';
+        document.getElementById('editModal').classList.add('open');
+    });
+});
+
+document.querySelectorAll('.restock-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+        document.getElementById('restockName').textContent = this.dataset.name;
+        document.getElementById('restockForm').action = '/products/' + this.dataset.id + '/restock';
+        document.getElementById('restockModal').classList.add('open');
+    });
+});
+
+function closeModal(id) {
+    document.getElementById(id).classList.remove('open');
+}
+document.querySelectorAll('.modal-overlay').forEach(el => {
+    el.addEventListener('click', function(e) {
+        if (e.target === el) closeModal(el.id);
+    });
+});
+</script>
+{% endblock %}

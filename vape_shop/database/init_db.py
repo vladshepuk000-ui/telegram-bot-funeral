@@ -67,6 +67,16 @@ async def create_tables():
             )
         """)
 
+        # Фото товарів (кілька фото на товар)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS product_photos (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id INTEGER REFERENCES products(id),
+                photo_id   TEXT NOT NULL,
+                position   INTEGER DEFAULT 0
+            )
+        """)
+
         # Список очікування товару
         await db.execute("""
             CREATE TABLE IF NOT EXISTS waitlist (

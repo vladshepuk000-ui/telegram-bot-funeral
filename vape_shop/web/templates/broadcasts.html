@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Розсилки{% endblock %}
+{% block page_title %}Розсилки{% endblock %}
+
+{% block content %}
+<div class="card" style="margin-bottom:24px; max-width:600px;">
+    <div style="font-size:15px; margin-bottom:4px;">📢 Підписників: <strong>{{ subscribers }}</strong></div>
+    <div class="text-muted">Розсилки відправляються через Telegram бота командою /broadcast</div>
+</div>
+
+<div class="table-wrap">
+    <div class="table-head">
+        <h2>Історія розсилок</h2>
+    </div>
+    {% if history %}
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Текст</th>
+                <th>Надіслано</th>
+                <th>Помилок</th>
+                <th>Дата</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for b in history %}
+            <tr>
+                <td class="text-muted">{{ b.id }}</td>
+                <td style="max-width:300px; white-space:pre-wrap; font-size:13px;">{{ b.text[:120] }}{% if b.text|length > 120 %}…{% endif %}</td>
+                <td><span class="badge badge-confirmed">{{ b.sent_count }}</span></td>
+                <td>{% if b.error_count > 0 %}<span class="badge badge-cancelled">{{ b.error_count }}</span>{% else %}—{% endif %}</td>
+                <td class="text-muted">{{ b.created_at[:16] }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">Розсилок ще не було</div>
+    {% endif %}
+</div>
+{% endblock %}

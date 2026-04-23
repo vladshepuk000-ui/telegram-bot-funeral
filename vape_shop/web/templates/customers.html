@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Клієнти{% endblock %}
+{% block page_title %}Клієнти{% endblock %}
+
+{% block content %}
+<div class="table-wrap">
+    <div class="table-head">
+        <h2>{{ customers|length }} клієнтів</h2>
+    </div>
+    {% if customers %}
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Username</th>
+                <th>Telegram ID</th>
+                <th>Телефон</th>
+                <th>Замовлень</th>
+                <th>Витрачено</th>
+                <th>Підписка</th>
+                <th>Перший раз</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for c in customers %}
+            <tr>
+                <td class="text-muted">{{ c.id }}</td>
+                <td>{{ "@" + c.username if c.username else "—" }}</td>
+                <td class="text-muted">{{ c.telegram_id }}</td>
+                <td class="text-muted">{{ c.phone or "—" }}</td>
+                <td>{{ c.orders_count }}</td>
+                <td>{{ "%.0f"|format(c.total_spent) }} грн</td>
+                <td>
+                    {% if c.is_subscribed %}
+                    <span class="badge badge-confirmed">✓</span>
+                    {% else %}
+                    <span class="badge badge-cancelled">✗</span>
+                    {% endif %}
+                </td>
+                <td class="text-muted">{{ c.first_seen[:10] if c.first_seen else "—" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty">Клієнтів ще немає</div>
+    {% endif %}
+</div>
+{% endblock %}

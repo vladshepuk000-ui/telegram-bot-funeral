@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Замовлення #{{ order.id }}{% endblock %}
+{% block page_title %}Замовлення #{{ order.id }}{% endblock %}
+
+{% block content %}
+<div style="display:grid; grid-template-columns: 1fr 340px; gap: 24px;">
+
+    <div>
+        <div class="table-wrap" style="margin-bottom:24px;">
+            <div class="table-head"><h2>Товари</h2></div>
+            <table>
+                <thead>
+                    <tr><th>Назва</th><th>Кількість</th><th>Ціна</th><th>Сума</th></tr>
+                </thead>
+                <tbody>
+                    {% for item in items %}
+                    <tr>
+                        <td>{{ item.name or "—" }}</td>
+                        <td>{{ item.quantity }}</td>
+                        <td>{{ "%.0f"|format(item.price_at_order) }} грн</td>
+                        <td>{{ "%.0f"|format(item.quantity * item.price_at_order) }} грн</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="card">
+            <div style="display:flex; justify-content:space-between; font-size:18px; font-weight:700;">
+                <span>Разом</span>
+                <span>{{ "%.0f"|format(order.total_price) }} грн</span>
+            </div>
+        </div>
+    </div>
+
+    <div>
+        <div class="card" style="margin-bottom:16px;">
+            <div class="card-label" style="margin-bottom:12px;">Інформація</div>
+            <div style="font-size:14px; display:flex; flex-direction:column; gap:8px;">
+                <div><span class="text-muted">Клієнт:</span> {{ "@" + order.username if order.username else "id:" + order.telegram_id|string }}</div>
+                <div><span class="text-muted">Телефон:</span> {{ order.phone or "—" }}</div>
+                <div><span class="text-muted">Адреса:</span> {{ order.address or "—" }}</div>
+                {% if order.notes %}
+                <div><span class="text-muted">Примітка:</span> {{ order.notes }}</div>
+                {% endif %}
+                <div><span class="text-muted">Дата:</span> {{ order.created_at[:16] }}</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-label" style="margin-bottom:12px;">Статус</div>
+            <div style="margin-bottom:12px;">
+                <span class="badge badge-{{ order.status }}" style="font-size:14px; padding:5px 14px;">
+                    {{ status_map.get(order.status, order.status) }}
+                </span>
+            </div>
+            <form method="post" action="/orders/{{ order.id }}/status">
+                <div class="form-group">
+                    <select name="new_status" class="form-control">
+                        {% for key, label in status_map.items() %}
+                        <option value="{{ key }}" {% if key == order.status %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <button type="submit" class="btn btn-primary" style="width:100%;">Змінити статус</button>
+            </form>
+        </div>
+    </div>
+
+</div>
+
+<div style="margin-top:16px;">
+    <a href="/orders" class="btn btn-ghost">← Назад до замовлень</a>
+</div>
+{% endblock %}

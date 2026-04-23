@@ -65,13 +65,24 @@ async def cmd_orders(message: Message):
         await message.answer("Замовлень ще немає.")
         return
 
-    text = "📋 <b>Останні 10 замовлень:</b>\n\n"
+    # Групуємо по order_id щоб не дублювати при кількох товарах
+    seen = {}
     for r in rows:
+        oid = r['id']
+        if oid not in seen:
+            seen[oid] = dict(r)
+            seen[oid]['items'] = []
+        if r['product_name']:
+            seen[oid]['items'].append(f"{r['product_name']} x{r['quantity']}")
+
+    text = "📋 <b>Останні замовлення:</b>\n\n"
+    for r in seen.values():
         status = STATUS_MAP.get(r['status'], r['status'])
         username = f"@{r['username']}" if r['username'] else f"id:{r['telegram_id']}"
+        items_str = ", ".join(r['items']) if r['items'] else "—"
         text += (
             f"#{r['id']} | {status}\n"
-            f"{r['product_name']} x{r['quantity']} — {r['total_price']} грн\n"
+            f"{items_str} — {r['total_price']} грн\n"
             f"Клієнт: {username}\n"
             f"Дата: {r['created_at'][:16]}\n\n"
         )
@@ -162,6 +173,9 @@ async def cmd_addproduct(message: Message, state: FSMContext):
 
 @router.message(AddProduct.name)
 async def add_name(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer("Введи назву товару текстом:")
+        return
     await state.update_data(name=message.text.strip())
     await state.set_state(AddProduct.category)
 
@@ -184,6 +198,9 @@ async def add_category(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AddProduct.description)
 async def add_description(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer("Введи опис товару текстом:")
+        return
     await state.update_data(description=message.text.strip())
     await state.set_state(AddProduct.price)
     await message.answer("Введи ціну (тільки число, наприклад: 120):")
@@ -191,6 +208,9 @@ async def add_description(message: Message, state: FSMContext):
 
 @router.message(AddProduct.price)
 async def add_price(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer("Введи ціну числом, наприклад: 120")
+        return
     try:
         price = float(message.text.replace(",", "."))
     except ValueError:
@@ -204,48 +224,95 @@ async def add_price(message: Message, state: FSMContext):
 
 @router.message(AddProduct.stock)
 async def add_stock(message: Message, state: FSMContext):
-    if not message.text.isdigit():
+    if not message.text or not message.text.isdigit():
         await message.answer("Введи ціле число, наприклад: 10")
         return
 
-    await state.update_data(stock=int(message.text))
+    await state.update_data(stock=int(message.text), photos=[])
     await state.set_state(AddProduct.photo)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Пропустити фото", callback_data="addphoto_skip")]
     ])
-    await message.answer("Надішли фото товару або пропусти:", reply_markup=kb)
+    await message.answer("Надішли фото товару (можна кілька по черзі) або пропусти:", reply_markup=kb)
+
+
+def photos_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Додати ще фото", callback_data="addphoto_more")],
+        [InlineKeyboardButton(text="✅ Готово",          callback_data="addphoto_done")],
+    ])
 
 
 @router.callback_query(F.data == "addphoto_skip")
 async def skip_photo(callback: CallbackQuery, state: FSMContext):
-    await save_product(callback.message, state, photo_id=None)
+    await save_product(callback.message, state, photos=[])
     await callback.answer()
+
+
+@router.callback_query(F.data == "addphoto_more")
+async def add_more_photo(callback: CallbackQuery):
+    await callback.message.answer("Надішли наступне фото:")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "addphoto_done")
+async def done_photos(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    await save_product(callback.message, state, photos=data.get('photos', []))
+    await callback.answer()
+
+
+@router.message(AddProduct.photo, ~F.photo)
+async def add_photo_wrong_type(message: Message):
+    await message.answer("Надішли фото або натисни 'Пропустити фото'.")
 
 
 @router.message(AddProduct.photo, F.photo)
 async def add_photo(message: Message, state: FSMContext):
     photo_id = message.photo[-1].file_id
-    await save_product(message, state, photo_id=photo_id)
+    data = await state.get_data()
+    photos = data.get('photos', [])
+
+    if len(photos) >= 10:
+        await message.answer("Максимум 10 фото на товар. Натисни ✅ Готово.")
+        return
+
+    photos.append(photo_id)
+    await state.update_data(photos=photos)
+    await message.answer(
+        f"Фото {len(photos)} додано ✅\nДодай ще або натисни Готово:",
+        reply_markup=photos_keyboard()
+    )
 
 
-async def save_product(message: Message, state: FSMContext, photo_id: str | None):
+async def save_product(message: Message, state: FSMContext, photos: list):
     data = await state.get_data()
     await state.clear()
 
+    main_photo = photos[0] if photos else None
+
     async with aiosqlite.connect(DATABASE_URL) as db:
-        await db.execute("""
+        cursor = await db.execute("""
             INSERT INTO products (name, category, description, price, stock, photo_id)
             VALUES (?, ?, ?, ?, ?, ?)
         """, (
             data['name'], data['category'], data['description'],
-            data['price'], data['stock'], photo_id
+            data['price'], data['stock'], main_photo
         ))
+        product_id = cursor.lastrowid
+
+        for i, pid in enumerate(photos):
+            await db.execute(
+                "INSERT INTO product_photos (product_id, photo_id, position) VALUES (?, ?, ?)",
+                (product_id, pid, i)
+            )
         await db.commit()
 
+    photo_info = f"{len(photos)} фото" if photos else "без фото"
     await message.answer(
         f"✅ Товар <b>{data['name']}</b> додано!\n"
-        f"Ціна: {data['price']} грн | Залишок: {data['stock']} шт"
+        f"Ціна: {data['price']} грн | Залишок: {data['stock']} шт | {photo_info}"
     )
 
 
