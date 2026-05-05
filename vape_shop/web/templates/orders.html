@@ -35,7 +35,7 @@
                 <td class="text-muted">{{ o.phone or "—" }}</td>
                 <td>{{ "%.0f"|format(o.total_price) }} грн</td>
                 <td><span class="badge badge-{{ o.status }}">{{ status_map.get(o.status, o.status) }}</span></td>
-                <td class="text-muted">{{ o.created_at[:16] }}</td>
+                <td class="text-muted">{{ o.created_at.strftime('%Y-%m-%d %H:%M') if o.created_at else '' }}</td>
                 <td><a href="/orders/{{ o.id }}" class="btn btn-ghost btn-sm">Деталі</a></td>
             </tr>
             {% endfor %}

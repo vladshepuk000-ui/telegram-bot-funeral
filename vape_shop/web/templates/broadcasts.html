@@ -30,7 +30,7 @@
                 <td style="max-width:300px; white-space:pre-wrap; font-size:13px;">{{ b.text[:120] }}{% if b.text|length > 120 %}…{% endif %}</td>
                 <td><span class="badge badge-confirmed">{{ b.sent_count }}</span></td>
                 <td>{% if b.error_count > 0 %}<span class="badge badge-cancelled">{{ b.error_count }}</span>{% else %}—{% endif %}</td>
-                <td class="text-muted">{{ b.created_at[:16] }}</td>
+                <td class="text-muted">{{ b.created_at.strftime('%Y-%m-%d %H:%M') if b.created_at else '' }}</td>
             </tr>
             {% endfor %}
         </tbody>
