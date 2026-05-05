@@ -1,5 +1,5 @@
 import os
-import aiosqlite
+import asyncpg
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -8,7 +8,10 @@ from aiogram.fsm.state import State, StatesGroup
 
 router = Router()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "vape_shop.db").replace("sqlite:///", "")
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:jHInKjjHzgONUJeWLNNkoxIumLhqIjIs@tramway.proxy.rlwy.net:56512/railway"
+)
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
 
 
@@ -46,12 +49,13 @@ async def cmd_editproduct(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
 
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT id, name, price FROM products WHERE is_active = 1"
-        ) as cursor:
-            products = await cursor.fetchall()
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        products = await conn.fetch(
+            "SELECT id, name, price FROM products WHERE is_active = TRUE"
+        )
+    finally:
+        await conn.close()
 
     if not products:
         await message.answer("Немає активних товарів.")
@@ -77,17 +81,16 @@ async def choose_product(callback: CallbackQuery, state: FSMContext):
     await state.update_data(product_id=product_id)
     await state.set_state(EditProduct.choosing_field)
 
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM products WHERE id = ?", (product_id,)
-        ) as cursor:
-            p = await cursor.fetchone()
-
-        async with db.execute(
-            "SELECT COUNT(*) as cnt FROM product_photos WHERE product_id = ?", (product_id,)
-        ) as cursor:
-            photo_count = (await cursor.fetchone())[0]
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        p = await conn.fetchrow(
+            "SELECT * FROM products WHERE id = $1", product_id
+        )
+        photo_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM product_photos WHERE product_id = $1", product_id
+        )
+    finally:
+        await conn.close()
 
     if photo_count == 0 and p['photo_id']:
         photo_count = 1
@@ -130,12 +133,13 @@ async def choose_field(callback: CallbackQuery, state: FSMContext):
     await state.update_data(field=field, product_id=product_id, new_photos=[])
 
     if field == "photo":
-        # Показати скільки фото зараз є
-        async with aiosqlite.connect(DATABASE_URL) as db:
-            async with db.execute(
-                "SELECT COUNT(*) FROM product_photos WHERE product_id = ?", (product_id,)
-            ) as cursor:
-                cnt = (await cursor.fetchone())[0]
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            cnt = await conn.fetchval(
+                "SELECT COUNT(*) FROM product_photos WHERE product_id = $1", product_id
+            )
+        finally:
+            await conn.close()
 
         await state.set_state(EditProduct.managing_photos)
         await callback.message.answer(
@@ -197,18 +201,20 @@ async def editphoto_done(callback: CallbackQuery, state: FSMContext):
 
     main_photo = new_photos[0]
 
-    async with aiosqlite.connect(DATABASE_URL) as db:
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
         # Видалити старі фото
-        await db.execute("DELETE FROM product_photos WHERE product_id = ?", (product_id,))
+        await conn.execute("DELETE FROM product_photos WHERE product_id = $1", product_id)
         # Оновити головне фото
-        await db.execute("UPDATE products SET photo_id = ? WHERE id = ?", (main_photo, product_id))
+        await conn.execute("UPDATE products SET photo_id = $1 WHERE id = $2", main_photo, product_id)
         # Зберегти нові
         for i, pid in enumerate(new_photos):
-            await db.execute(
-                "INSERT INTO product_photos (product_id, photo_id, position) VALUES (?, ?, ?)",
-                (product_id, pid, i)
+            await conn.execute(
+                "INSERT INTO product_photos (product_id, photo_id, position) VALUES ($1, $2, $3)",
+                product_id, pid, i
             )
-        await db.commit()
+    finally:
+        await conn.close()
 
     await state.clear()
     await callback.message.edit_reply_markup(reply_markup=None)
@@ -238,12 +244,14 @@ async def save_value(message: Message, state: FSMContext):
             return
 
     column = field  # вже провалідовано через ALLOWED_FIELDS
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        await db.execute(
-            f"UPDATE products SET {column} = ? WHERE id = ?",
-            (value, product_id)
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        await conn.execute(
+            f"UPDATE products SET {column} = $1 WHERE id = $2",
+            value, product_id
         )
-        await db.commit()
+    finally:
+        await conn.close()
 
     await state.clear()
 

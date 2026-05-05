@@ -1,6 +1,6 @@
 import os
 import logging
-import aiosqlite
+import asyncpg
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -10,7 +10,10 @@ from aiogram.fsm.state import State, StatesGroup
 router = Router()
 logger = logging.getLogger(__name__)
 
-DATABASE_URL = os.getenv("DATABASE_URL", "vape_shop.db").replace("sqlite:///", "")
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:jHInKjjHzgONUJeWLNNkoxIumLhqIjIs@tramway.proxy.rlwy.net:56512/railway"
+)
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
 
 
@@ -119,23 +122,21 @@ async def handle_review_text(message: Message, state: FSMContext):
 
 async def _save_review(bot, telegram_id: int, order_id: int, rating: int, text: str | None):
     """Зберегти відгук і сповістити адміна."""
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-
-        # Знайти customer_id
-        async with db.execute(
-            "SELECT id, username FROM customers WHERE telegram_id = ?", (telegram_id,)
-        ) as cursor:
-            customer = await cursor.fetchone()
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        customer = await conn.fetchrow(
+            "SELECT id, username FROM customers WHERE telegram_id = $1", telegram_id
+        )
 
         if not customer:
             return
 
-        await db.execute(
-            "INSERT INTO reviews (customer_id, order_id, rating, text) VALUES (?, ?, ?, ?)",
-            (customer['id'], order_id, rating, text)
+        await conn.execute(
+            "INSERT INTO reviews (customer_id, order_id, rating, text) VALUES ($1, $2, $3, $4)",
+            customer['id'], order_id, rating, text
         )
-        await db.commit()
+    finally:
+        await conn.close()
 
     # Сповістити адміна
     stars = "⭐" * rating + "☆" * (5 - rating)
@@ -161,9 +162,9 @@ async def cmd_reviews(message: Message):
     if not is_admin(message.from_user.id):
         return
 
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("""
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        rows = await conn.fetch("""
             SELECT r.rating, r.text, r.created_at,
                    c.username, c.telegram_id,
                    r.order_id
@@ -171,20 +172,18 @@ async def cmd_reviews(message: Message):
             LEFT JOIN customers c ON r.customer_id = c.id
             ORDER BY r.created_at DESC
             LIMIT 20
-        """) as cursor:
-            rows = await cursor.fetchall()
+        """)
+
+        stats = await conn.fetchrow("SELECT AVG(rating) as avg, COUNT(*) as cnt FROM reviews")
+    finally:
+        await conn.close()
 
     if not rows:
         await message.answer("Відгуків ще немає.")
         return
 
-    # Середня оцінка
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        async with db.execute("SELECT AVG(rating) as avg, COUNT(*) as cnt FROM reviews") as cursor:
-            stats = await cursor.fetchone()
-
-    avg = round(stats[0], 1) if stats[0] else 0
-    cnt = stats[1]
+    avg = round(float(stats['avg']), 1) if stats['avg'] else 0
+    cnt = stats['cnt']
 
     text = f"⭐ <b>Відгуки клієнтів</b>\n"
     text += f"Середня оцінка: {avg}/5 ({cnt} відгуків)\n\n"
@@ -196,6 +195,6 @@ async def cmd_reviews(message: Message):
         if r['text']:
             preview = r['text'][:80] + ("..." if len(r['text']) > 80 else "")
             text += f"<i>{preview}</i>\n"
-        text += f"<code>{r['created_at'][:10]}</code>\n\n"
+        text += f"<code>{str(r['created_at'])[:10]}</code>\n\n"
 
     await message.answer(text)

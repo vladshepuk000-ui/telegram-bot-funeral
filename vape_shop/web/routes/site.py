@@ -1,7 +1,7 @@
 import os
 import json
 import uuid
-import aiosqlite
+import asyncpg
 import aiohttp
 import logging
 from fastapi import APIRouter, Request
@@ -12,7 +12,10 @@ logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.join(os.path.dirname(__file__), "..", "templates")
 templates = Jinja2Templates(directory=BASE_DIR)
-DATABASE_URL = os.getenv("DATABASE_URL", "vape_shop.db").replace("sqlite:///", "")
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:jHInKjjHzgONUJeWLNNkoxIumLhqIjIs@tramway.proxy.rlwy.net:56512/railway"
+)
 
 router = APIRouter()
 
@@ -22,33 +25,30 @@ online_sessions: dict[str, datetime] = {}
 
 @router.get("/site", response_class=HTMLResponse)
 async def landing(request: Request):
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-
-        async with db.execute("""
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        reviews = await conn.fetch("""
             SELECT r.rating, r.text, r.created_at, c.username
             FROM reviews r
             LEFT JOIN customers c ON r.customer_id = c.id
             WHERE r.text IS NOT NULL AND r.text != ''
             ORDER BY r.created_at DESC
             LIMIT 6
-        """) as cur:
-            reviews = await cur.fetchall()
+        """)
 
-        async with db.execute("""
-            SELECT COUNT(*) as cnt FROM products WHERE is_active = 1 AND stock > 0
-        """) as cur:
-            products_count = (await cur.fetchone())["cnt"]
+        products_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM products WHERE is_active = TRUE AND stock > 0"
+        )
 
-        async with db.execute("""
+        products = await conn.fetch("""
             SELECT id, name, category, description, price, old_price, stock, photo_id, is_new, is_hit
-            FROM products WHERE is_active = 1
+            FROM products WHERE is_active = TRUE
             ORDER BY category, name
-        """) as cur:
-            products = await cur.fetchall()
+        """)
 
-        async with db.execute("SELECT COUNT(*) as cnt FROM customers") as cur:
-            customers_count = (await cur.fetchone())["cnt"]
+        customers_count = await conn.fetchval("SELECT COUNT(*) FROM customers")
+    finally:
+        await conn.close()
 
     # Рахуємо відвідування
     await increment_stat("visits")
@@ -70,12 +70,14 @@ async def landing(request: Request):
 async def increment_stat(column: str):
     from datetime import date
     today = date.today().isoformat()
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        await db.execute(f"""
-            INSERT INTO site_stats (date, {column}) VALUES (?, 1)
-            ON CONFLICT(date) DO UPDATE SET {column} = {column} + 1
-        """, (today,))
-        await db.commit()
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        await conn.execute(f"""
+            INSERT INTO site_stats (date, {column}) VALUES ($1, 1)
+            ON CONFLICT(date) DO UPDATE SET {column} = site_stats.{column} + 1
+        """, today)
+    finally:
+        await conn.close()
 
 
 async def notify_admin(text: str):
@@ -133,17 +135,19 @@ async def web_order(request: Request):
 
     # Зберігаємо замовлення і зменшуємо залишок
     order_id = str(uuid.uuid4())[:8]
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        await db.execute(
-            "INSERT INTO web_orders (id, name, phone, cart_json) VALUES (?, ?, ?, ?)",
-            (order_id, name, phone, json.dumps(cart))
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        await conn.execute(
+            "INSERT INTO web_orders (id, name, phone, cart_json) VALUES ($1, $2, $3, $4)",
+            order_id, name, phone, json.dumps(cart)
         )
         for item in cart:
-            await db.execute(
-                "UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?",
-                (item.get("qty", 1), item.get("id"))
+            await conn.execute(
+                "UPDATE products SET stock = GREATEST(0, stock - $1) WHERE id = $2",
+                item.get("qty", 1), item.get("id")
             )
-        await db.commit()
+    finally:
+        await conn.close()
 
     bot_token = os.getenv("BOT_TOKEN", "")
     admin_ids = [x for x in os.getenv("ADMIN_IDS", "").split(",") if x]
@@ -163,22 +167,22 @@ async def web_order(request: Request):
 
 @router.post("/api/order/{order_id}/cancel")
 async def cancel_order(order_id: str):
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM web_orders WHERE id = ?", (order_id,)) as cur:
-            order = await cur.fetchone()
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        order = await conn.fetchrow("SELECT * FROM web_orders WHERE id = $1", order_id)
 
         if not order or order["status"] == "cancelled":
             return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
 
         cart = json.loads(order["cart_json"])
-        await db.execute("UPDATE web_orders SET status = 'cancelled' WHERE id = ?", (order_id,))
+        await conn.execute("UPDATE web_orders SET status = 'cancelled' WHERE id = $1", order_id)
         for item in cart:
-            await db.execute(
-                "UPDATE products SET stock = stock + ? WHERE id = ?",
-                (item.get("qty", 1), item.get("id"))
+            await conn.execute(
+                "UPDATE products SET stock = stock + $1 WHERE id = $2",
+                item.get("qty", 1), item.get("id")
             )
-        await db.commit()
+    finally:
+        await conn.close()
 
     await notify_admin(f"❌ Замовлення #{order_id} скасовано клієнтом\n👤 {order['name']}\n📞 {order['phone']}")
     return JSONResponse({"ok": True})
@@ -197,32 +201,33 @@ async def online_count(request: Request):
 
 @router.get("/api/products-stock")
 async def products_stock():
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT id, stock FROM products WHERE is_active = 1"
-        ) as cur:
-            rows = await cur.fetchall()
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        rows = await conn.fetch(
+            "SELECT id, stock FROM products WHERE is_active = TRUE"
+        )
+    finally:
+        await conn.close()
     return JSONResponse([{"id": r["id"], "stock": r["stock"]} for r in rows])
 
 
 @router.get("/api/product/{product_id}")
 async def product_detail(product_id: int):
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT id, name, category, description, price, old_price, stock, photo_id FROM products WHERE id = ? AND is_active = 1",
-            (product_id,)
-        ) as cur:
-            p = await cur.fetchone()
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        p = await conn.fetchrow(
+            "SELECT id, name, category, description, price, old_price, stock, photo_id FROM products WHERE id = $1 AND is_active = TRUE",
+            product_id
+        )
         if not p:
             return JSONResponse({"error": "not found"}, status_code=404)
 
-        async with db.execute(
-            "SELECT photo_id FROM product_photos WHERE product_id = ? ORDER BY position",
-            (product_id,)
-        ) as cur:
-            photo_rows = await cur.fetchall()
+        photo_rows = await conn.fetch(
+            "SELECT photo_id FROM product_photos WHERE product_id = $1 ORDER BY position",
+            product_id
+        )
+    finally:
+        await conn.close()
 
     photos = [r["photo_id"] for r in photo_rows]
     if not photos and p["photo_id"]:

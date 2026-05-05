@@ -1,11 +1,23 @@
-import aiosqlite
+import asyncpg
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-_db_url = os.getenv("DATABASE_URL", "vape_shop.db")
-DATABASE_URL = _db_url.replace("sqlite:///", "")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:jHInKjjHzgONUJeWLNNkoxIumLhqIjIs@tramway.proxy.rlwy.net:56512/railway")
+
+
+async def _connect() -> asyncpg.Connection:
+    return await asyncpg.connect(DATABASE_URL)
+
+
+def _row_to_dict(row) -> dict:
+    """Перетворює asyncpg Record у dict."""
+    return dict(row) if row else None
+
+
+def _rows_to_dicts(rows) -> list[dict]:
+    return [dict(r) for r in rows]
 
 
 # ─────────────────────────────────────────
@@ -13,42 +25,48 @@ DATABASE_URL = _db_url.replace("sqlite:///", "")
 # ─────────────────────────────────────────
 
 async def add_customer(telegram_id: int, username: str = None) -> None:
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        await db.execute("""
+    conn = await _connect()
+    try:
+        await conn.execute("""
             INSERT INTO customers (telegram_id, username)
-            VALUES (?, ?)
-            ON CONFLICT(telegram_id) DO UPDATE SET username = excluded.username
-        """, (telegram_id, username))
-        await db.commit()
+            VALUES ($1, $2)
+            ON CONFLICT(telegram_id) DO UPDATE SET username = EXCLUDED.username
+        """, telegram_id, username)
+    finally:
+        await conn.close()
 
 
 async def get_customer(telegram_id: int) -> dict | None:
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM customers WHERE telegram_id = ?", (telegram_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            return dict(row) if row else None
+    conn = await _connect()
+    try:
+        row = await conn.fetchrow(
+            "SELECT * FROM customers WHERE telegram_id = $1", telegram_id
+        )
+        return _row_to_dict(row)
+    finally:
+        await conn.close()
 
 
 async def get_all_subscribed_customers() -> list[dict]:
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM customers WHERE is_subscribed = 1"
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
+    conn = await _connect()
+    try:
+        rows = await conn.fetch(
+            "SELECT * FROM customers WHERE is_subscribed = TRUE"
+        )
+        return _rows_to_dicts(rows)
+    finally:
+        await conn.close()
 
 
 async def set_subscribed(telegram_id: int, value: bool) -> None:
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        await db.execute(
-            "UPDATE customers SET is_subscribed = ? WHERE telegram_id = ?",
-            (1 if value else 0, telegram_id)
+    conn = await _connect()
+    try:
+        await conn.execute(
+            "UPDATE customers SET is_subscribed = $1 WHERE telegram_id = $2",
+            value, telegram_id
         )
-        await db.commit()
+    finally:
+        await conn.close()
 
 
 # ─────────────────────────────────────────
@@ -56,42 +74,47 @@ async def set_subscribed(telegram_id: int, value: bool) -> None:
 # ─────────────────────────────────────────
 
 async def get_all_products(only_active: bool = True) -> list[dict]:
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
+    conn = await _connect()
+    try:
         query = "SELECT * FROM products"
         if only_active:
-            query += " WHERE is_active = 1"
-        async with db.execute(query) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
+            query += " WHERE is_active = TRUE"
+        rows = await conn.fetch(query)
+        return _rows_to_dicts(rows)
+    finally:
+        await conn.close()
 
 
 async def get_products_by_category(category: str) -> list[dict]:
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM products WHERE category = ? AND is_active = 1", (category,)
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
+    conn = await _connect()
+    try:
+        rows = await conn.fetch(
+            "SELECT * FROM products WHERE category = $1 AND is_active = TRUE", category
+        )
+        return _rows_to_dicts(rows)
+    finally:
+        await conn.close()
 
 
 async def get_product_by_id(product_id: int) -> dict | None:
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM products WHERE id = ?", (product_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            return dict(row) if row else None
+    conn = await _connect()
+    try:
+        row = await conn.fetchrow(
+            "SELECT * FROM products WHERE id = $1", product_id
+        )
+        return _row_to_dict(row)
+    finally:
+        await conn.close()
 
 
 async def update_stock(product_id: int, new_stock: int) -> None:
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        await db.execute(
-            "UPDATE products SET stock = ? WHERE id = ?", (new_stock, product_id)
+    conn = await _connect()
+    try:
+        await conn.execute(
+            "UPDATE products SET stock = $1 WHERE id = $2", new_stock, product_id
         )
-        await db.commit()
+    finally:
+        await conn.close()
 
 
 # ─────────────────────────────────────────
@@ -100,63 +123,73 @@ async def update_stock(product_id: int, new_stock: int) -> None:
 
 async def get_next_broadcast_template() -> dict | None:
     """Повертає шаблон який найдавніше використовувався"""
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("""
+    conn = await _connect()
+    try:
+        row = await conn.fetchrow("""
             SELECT * FROM broadcast_templates
             ORDER BY last_used ASC NULLS FIRST
             LIMIT 1
-        """) as cursor:
-            row = await cursor.fetchone()
-            return dict(row) if row else None
+        """)
+        return _row_to_dict(row)
+    finally:
+        await conn.close()
 
 
 async def mark_template_used(template_id: int) -> None:
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        await db.execute("""
+    conn = await _connect()
+    try:
+        await conn.execute("""
             UPDATE broadcast_templates
             SET used_count = used_count + 1,
                 last_used = CURRENT_TIMESTAMP
-            WHERE id = ?
-        """, (template_id,))
-        await db.commit()
+            WHERE id = $1
+        """, template_id)
+    finally:
+        await conn.close()
 
 
 async def log_broadcast(text: str, sent: int, errors: int) -> None:
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        await db.execute(
-            "INSERT INTO broadcasts (text, sent_count, error_count) VALUES (?, ?, ?)",
-            (text, sent, errors)
+    conn = await _connect()
+    try:
+        await conn.execute(
+            "INSERT INTO broadcasts (text, sent_count, error_count) VALUES ($1, $2, $3)",
+            text, sent, errors
         )
-        await db.commit()
+    finally:
+        await conn.close()
 
 
 async def add_broadcast_template(text: str) -> None:
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        await db.execute(
-            "INSERT INTO broadcast_templates (text) VALUES (?)", (text,)
+    conn = await _connect()
+    try:
+        await conn.execute(
+            "INSERT INTO broadcast_templates (text) VALUES ($1)", text
         )
-        await db.commit()
+    finally:
+        await conn.close()
 
 
 async def get_waitlist_for_product(product_id: int) -> list[dict]:
     """Повертає список telegram_id клієнтів що чекають на товар"""
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("""
+    conn = await _connect()
+    try:
+        rows = await conn.fetch("""
             SELECT c.telegram_id, w.id as waitlist_id
             FROM waitlist w
             JOIN customers c ON w.customer_id = c.id
-            WHERE w.product_id = ?
-        """, (product_id,)) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
+            WHERE w.product_id = $1
+        """, product_id)
+        return _rows_to_dicts(rows)
+    finally:
+        await conn.close()
 
 
 async def clear_waitlist_for_product(product_id: int) -> None:
     """Видаляє всіх з waitlist після сповіщення"""
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        await db.execute(
-            "DELETE FROM waitlist WHERE product_id = ?", (product_id,)
+    conn = await _connect()
+    try:
+        await conn.execute(
+            "DELETE FROM waitlist WHERE product_id = $1", product_id
         )
-        await db.commit()
+    finally:
+        await conn.close()

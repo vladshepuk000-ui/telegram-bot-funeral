@@ -1,6 +1,7 @@
 import os
 import re
 import logging
+import asyncpg
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -8,12 +9,14 @@ from aiogram.filters import Command
 
 from bot.states.order_states import OrderForm
 from database.queries import get_product_by_id
-import aiosqlite
 
 router = Router()
 logger = logging.getLogger(__name__)
 
-DATABASE_URL = os.getenv("DATABASE_URL", "vape_shop.db").replace("sqlite:///", "")
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:jHInKjjHzgONUJeWLNNkoxIumLhqIjIs@tramway.proxy.rlwy.net:56512/railway"
+)
 PHONE_RE = re.compile(r"^(\+?3?8?0\d{9}|0\d{9})$")
 
 
@@ -103,21 +106,22 @@ STATUS_LABELS = {
 # ── Мої замовлення ──
 @router.message(F.text == "📊 Мої замовлення")
 async def my_orders(message: Message):
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("""
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        orders = await conn.fetch("""
             SELECT o.id, o.status, o.total_price, o.created_at,
-                   GROUP_CONCAT(p.name || ' x' || oi.quantity, ', ') as items_summary
+                   STRING_AGG(p.name || ' x' || oi.quantity, ', ') as items_summary
             FROM orders o
             LEFT JOIN customers c ON o.customer_id = c.id
             LEFT JOIN order_items oi ON oi.order_id = o.id
             LEFT JOIN products p ON oi.product_id = p.id
-            WHERE c.telegram_id = ?
-            GROUP BY o.id
+            WHERE c.telegram_id = $1
+            GROUP BY o.id, o.status, o.total_price, o.created_at
             ORDER BY o.created_at DESC
             LIMIT 5
-        """, (message.from_user.id,)) as cursor:
-            orders = await cursor.fetchall()
+        """, message.from_user.id)
+    finally:
+        await conn.close()
 
     if not orders:
         await message.answer("У тебе ще немає замовлень.\nПерегляни 🛍 Каталог щоб зробити перше!")
@@ -126,7 +130,7 @@ async def my_orders(message: Message):
     text = "📊 <b>Твої останні замовлення:</b>\n\n"
     for o in orders:
         status = STATUS_LABELS.get(o['status'], o['status'])
-        date = o['created_at'][:10] if o['created_at'] else "—"
+        date = str(o['created_at'])[:10] if o['created_at'] else "—"
         text += (
             f"#{o['id']} — {status}\n"
             f"{o['items_summary'] or '—'} — {o['total_price']} грн\n"
@@ -235,12 +239,13 @@ async def choose_quantity(message: Message, state: FSMContext):
 # ── Додати ще товар до кошика ──
 @router.callback_query(F.data == "cart_add_more")
 async def add_more_to_cart(callback: CallbackQuery, state: FSMContext):
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT id, name, price, stock FROM products WHERE is_active = 1 AND stock > 0 ORDER BY category"
-        ) as cursor:
-            products = await cursor.fetchall()
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        products = await conn.fetch(
+            "SELECT id, name, price, stock FROM products WHERE is_active = TRUE AND stock > 0 ORDER BY category"
+        )
+    finally:
+        await conn.close()
 
     if not products:
         await callback.answer("Немає доступних товарів", show_alert=True)
@@ -431,39 +436,39 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
     method = data.get('payment_method', 'card')
     cart = data.get('cart', [])
 
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        async with db.execute(
-            "SELECT id FROM customers WHERE telegram_id = ?", (user.id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            customer_id = row[0] if row else None
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        row = await conn.fetchrow(
+            "SELECT id FROM customers WHERE telegram_id = $1", user.id
+        )
+        customer_id = row["id"] if row else None
 
         initial_status = "awaiting_payment" if method == "card" else "new"
 
-        cursor = await db.execute(
-            "INSERT INTO orders (customer_id, address, phone, notes, total_price, status) VALUES (?, ?, ?, ?, ?, ?)",
-            (customer_id, data['address'], data['phone'], data.get('notes', ''), data['total'], initial_status)
+        order_id = await conn.fetchval(
+            "INSERT INTO orders (customer_id, address, phone, notes, total_price, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+            customer_id, data['address'], data['phone'], data.get('notes', ''), data['total'], initial_status
         )
-        order_id = cursor.lastrowid
 
         # Зберегти всі позиції кошика
         for item in cart:
-            await db.execute(
-                "INSERT INTO order_items (order_id, product_id, quantity, price_at_order) VALUES (?, ?, ?, ?)",
-                (order_id, item['product_id'], item['quantity'], item['price'])
+            await conn.execute(
+                "INSERT INTO order_items (order_id, product_id, quantity, price_at_order) VALUES ($1, $2, $3, $4)",
+                order_id, item['product_id'], item['quantity'], item['price']
             )
             # Зменшуємо залишок для накладеного та готівки
             if method != "card":
-                await db.execute(
-                    "UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?",
-                    (item['quantity'], item['product_id'])
+                await conn.execute(
+                    "UPDATE products SET stock = GREATEST(0, stock - $1) WHERE id = $2",
+                    item['quantity'], item['product_id']
                 )
 
-        await db.execute(
-            "UPDATE customers SET total_orders = total_orders + 1, last_order = CURRENT_TIMESTAMP WHERE id = ?",
-            (customer_id,)
+        await conn.execute(
+            "UPDATE customers SET total_orders = total_orders + 1, last_order = CURRENT_TIMESTAMP WHERE id = $1",
+            customer_id
         )
-        await db.commit()
+    finally:
+        await conn.close()
 
     await callback.message.edit_reply_markup(reply_markup=None)
 
@@ -538,23 +543,23 @@ async def receive_screenshot(message: Message, state: FSMContext):
     order_id = data.get('order_id')
     await state.clear()
 
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT product_id, quantity FROM order_items WHERE order_id = ?", (order_id,)
-        ) as cursor:
-            items = await cursor.fetchall()
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        items = await conn.fetch(
+            "SELECT product_id, quantity FROM order_items WHERE order_id = $1", order_id
+        )
 
         for item in items:
-            await db.execute(
-                "UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?",
-                (item['quantity'], item['product_id'])
+            await conn.execute(
+                "UPDATE products SET stock = GREATEST(0, stock - $1) WHERE id = $2",
+                item['quantity'], item['product_id']
             )
 
-        await db.execute(
-            "UPDATE orders SET status = 'new' WHERE id = ?", (order_id,)
+        await conn.execute(
+            "UPDATE orders SET status = 'new' WHERE id = $1", order_id
         )
-        await db.commit()
+    finally:
+        await conn.close()
 
     admin_ids = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
     for admin_id in admin_ids:
@@ -605,12 +610,11 @@ async def cancel_order(callback: CallbackQuery, state: FSMContext):
 async def cancel_placed_order(callback: CallbackQuery, state: FSMContext):
     order_id = int(callback.data.replace("cancel_order_", ""))
 
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT status FROM orders WHERE id = ?", (order_id,)
-        ) as cursor:
-            order = await cursor.fetchone()
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        order = await conn.fetchrow(
+            "SELECT status FROM orders WHERE id = $1", order_id
+        )
 
         if not order:
             await callback.answer("Замовлення не знайдено", show_alert=True)
@@ -623,23 +627,22 @@ async def cancel_placed_order(callback: CallbackQuery, state: FSMContext):
             )
             return
 
-        async with db.execute(
-            "SELECT product_id, quantity FROM order_items WHERE order_id = ?", (order_id,)
-        ) as cursor:
-            items = await cursor.fetchall()
+        items = await conn.fetch(
+            "SELECT product_id, quantity FROM order_items WHERE order_id = $1", order_id
+        )
 
-        await db.execute(
-            "UPDATE orders SET status = 'cancelled' WHERE id = ?", (order_id,)
+        await conn.execute(
+            "UPDATE orders SET status = 'cancelled' WHERE id = $1", order_id
         )
 
         if order['status'] == "new":
             for item in items:
-                await db.execute(
-                    "UPDATE products SET stock = stock + ? WHERE id = ?",
-                    (item['quantity'], item['product_id'])
+                await conn.execute(
+                    "UPDATE products SET stock = stock + $1 WHERE id = $2",
+                    item['quantity'], item['product_id']
                 )
-
-        await db.commit()
+    finally:
+        await conn.close()
 
     await state.clear()
     await callback.message.edit_reply_markup(reply_markup=None)

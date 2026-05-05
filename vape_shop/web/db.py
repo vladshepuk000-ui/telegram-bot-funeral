@@ -1,13 +1,9 @@
 import os
-import aiosqlite
+import asyncpg
 
-DATABASE_URL = os.getenv("DATABASE_URL", "vape_shop.db").replace("sqlite:///", "")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:jHInKjjHzgONUJeWLNNkoxIumLhqIjIs@tramway.proxy.rlwy.net:56512/railway")
 
 
-async def get_db():
-    db = await aiosqlite.connect(DATABASE_URL)
-    db.row_factory = aiosqlite.Row
-    try:
-        yield db
-    finally:
-        await db.close()
+async def get_db() -> asyncpg.Connection:
+    """Повертає підключення до PostgreSQL. Закривати вручну після використання."""
+    return await asyncpg.connect(DATABASE_URL)

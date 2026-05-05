@@ -1,10 +1,13 @@
 import os
-import aiosqlite
+import asyncpg
 from aiogram import Router, F
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from database.queries import get_all_products, get_products_by_category, get_product_by_id
 
-DATABASE_URL = os.getenv("DATABASE_URL", "vape_shop.db").replace("sqlite:///", "")
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:jHInKjjHzgONUJeWLNNkoxIumLhqIjIs@tramway.proxy.rlwy.net:56512/railway"
+)
 
 router = Router()
 
@@ -26,23 +29,23 @@ def categories_keyboard() -> InlineKeyboardMarkup:
 
 def products_keyboard(products: list, category: str) -> InlineKeyboardMarkup:
     buttons = [
-        [InlineKeyboardButton(text=f"{p['name']} — {p['price']} грн", callback_data=f"product_{p['id']}")]
+        [InlineKeyboardButton(text=f"{p['name']} — {p['price']} грн", callback_data=f"product_{p['id']}_{category}")]
         for p in products
     ]
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="cat_back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def product_keyboard(product_id: int, in_stock: bool = True) -> InlineKeyboardMarkup:
+def product_keyboard(product_id: int, category: str, in_stock: bool = True) -> InlineKeyboardMarkup:
     if in_stock:
         buttons = [
             [InlineKeyboardButton(text="🛒 Замовити", callback_data=f"buy_{product_id}")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="cat_back")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"cat_{category}")],
         ]
     else:
         buttons = [
             [InlineKeyboardButton(text="🔔 Сповісти коли з'явиться", callback_data=f"waitlist_{product_id}")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="cat_back")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"cat_{category}")],
         ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -86,17 +89,25 @@ async def show_category(callback):
         await callback.answer("Товарів в цій категорії немає", show_alert=True)
         return
 
-    await callback.message.edit_text(
-        f"📦 {title}:",
-        reply_markup=products_keyboard(products, category)
-    )
+    try:
+        await callback.message.edit_text(
+            f"📦 {title}:",
+            reply_markup=products_keyboard(products, category)
+        )
+    except Exception:
+        await callback.message.answer(
+            f"📦 {title}:",
+            reply_markup=products_keyboard(products, category)
+        )
     await callback.answer()
 
 
 # ── Картка товару ──
 @router.callback_query(F.data.startswith("product_"))
 async def show_product(callback):
-    product_id = int(callback.data.replace("product_", ""))
+    parts = callback.data.replace("product_", "").split("_", 1)
+    product_id = int(parts[0])
+    category = parts[1] if len(parts) > 1 else "back"
     product = await get_product_by_id(product_id)
 
     if not product:
@@ -113,16 +124,18 @@ async def show_product(callback):
     )
 
     in_stock = product['stock'] > 0
-    kb = product_keyboard(product_id, in_stock)
+    kb = product_keyboard(product_id, category, in_stock)
 
     # Отримати всі фото товару
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        async with db.execute(
-            "SELECT photo_id FROM product_photos WHERE product_id = ? ORDER BY position",
-            (product_id,)
-        ) as cursor:
-            rows = await cursor.fetchall()
-    photos = [r[0] for r in rows]
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        rows = await conn.fetch(
+            "SELECT photo_id FROM product_photos WHERE product_id = $1 ORDER BY position",
+            product_id
+        )
+    finally:
+        await conn.close()
+    photos = [r["photo_id"] for r in rows]
 
     # Якщо в product_photos немає — використати старе photo_id
     if not photos and product['photo_id']:

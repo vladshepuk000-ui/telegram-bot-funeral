@@ -1,21 +1,20 @@
-import aiosqlite
+import asyncpg
 import asyncio
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-_db_url = os.getenv("DATABASE_URL", "vape_shop.db")
-DATABASE_URL = _db_url.replace("sqlite:///", "")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:jHInKjjHzgONUJeWLNNkoxIumLhqIjIs@tramway.proxy.rlwy.net:56512/railway")
 
 
 async def create_tables():
-    async with aiosqlite.connect(DATABASE_URL) as db:
-
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
         # Товари
-        await db.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS products (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                id          SERIAL PRIMARY KEY,
                 name        TEXT NOT NULL,
                 category    TEXT NOT NULL,
                 description TEXT,
@@ -23,43 +22,43 @@ async def create_tables():
                 stock       INTEGER DEFAULT 0,
                 photo_id    TEXT,
                 photo_url   TEXT,
-                is_active   BOOLEAN DEFAULT 1,
-                created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+                is_active   BOOLEAN DEFAULT TRUE,
+                created_at  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
         # Клієнти
-        await db.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS customers (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                telegram_id   INTEGER UNIQUE NOT NULL,
+                id            SERIAL PRIMARY KEY,
+                telegram_id   BIGINT UNIQUE NOT NULL,
                 username      TEXT,
                 phone         TEXT,
-                is_subscribed BOOLEAN DEFAULT 1,
-                first_seen    DATETIME DEFAULT CURRENT_TIMESTAMP,
-                last_order    DATETIME,
+                is_subscribed BOOLEAN DEFAULT TRUE,
+                first_seen    TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                last_order    TIMESTAMPTZ,
                 total_orders  INTEGER DEFAULT 0
             )
         """)
 
         # Замовлення
-        await db.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS orders (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                id          SERIAL PRIMARY KEY,
                 customer_id INTEGER REFERENCES customers(id),
                 address     TEXT,
                 phone       TEXT,
                 notes       TEXT,
                 total_price REAL,
                 status      TEXT DEFAULT 'new',
-                created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
         # Позиції замовлення
-        await db.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS order_items (
-                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                id             SERIAL PRIMARY KEY,
                 order_id       INTEGER REFERENCES orders(id),
                 product_id     INTEGER REFERENCES products(id),
                 quantity       INTEGER NOT NULL,
@@ -68,9 +67,9 @@ async def create_tables():
         """)
 
         # Фото товарів (кілька фото на товар)
-        await db.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS product_photos (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                id         SERIAL PRIMARY KEY,
                 product_id INTEGER REFERENCES products(id),
                 photo_id   TEXT NOT NULL,
                 position   INTEGER DEFAULT 0
@@ -78,63 +77,63 @@ async def create_tables():
         """)
 
         # Список очікування товару
-        await db.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS waitlist (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                id          SERIAL PRIMARY KEY,
                 customer_id INTEGER REFERENCES customers(id),
                 product_id  INTEGER REFERENCES products(id),
-                created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
         # Відгуки
-        await db.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS reviews (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                id          SERIAL PRIMARY KEY,
                 customer_id INTEGER REFERENCES customers(id),
                 order_id    INTEGER REFERENCES orders(id),
                 rating      INTEGER NOT NULL,
                 text        TEXT,
-                created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
         # Шаблони авторозсилок
-        await db.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS broadcast_templates (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                id         SERIAL PRIMARY KEY,
                 text       TEXT NOT NULL,
                 used_count INTEGER DEFAULT 0,
-                last_used  DATETIME
+                last_used  TIMESTAMPTZ
             )
         """)
 
         # Логування розсилок
-        await db.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS broadcasts (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                id          SERIAL PRIMARY KEY,
                 text        TEXT NOT NULL,
                 sent_count  INTEGER DEFAULT 0,
                 error_count INTEGER DEFAULT 0,
-                created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
         # Контекст AI розмов
-        await db.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS ai_chat_history (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                id          SERIAL PRIMARY KEY,
                 customer_id INTEGER REFERENCES customers(id),
                 role        TEXT NOT NULL,
                 content     TEXT NOT NULL,
-                created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
         # Лічильник AI запитів
-        await db.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS ai_usage (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                id          SERIAL PRIMARY KEY,
                 customer_id INTEGER REFERENCES customers(id),
                 date        DATE NOT NULL,
                 count       INTEGER DEFAULT 0,
@@ -142,8 +141,38 @@ async def create_tables():
             )
         """)
 
-        await db.commit()
+        # Статистика сайту
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS site_stats (
+                date      TEXT PRIMARY KEY,
+                visits    INTEGER DEFAULT 0,
+                bot_clicks INTEGER DEFAULT 0
+            )
+        """)
+
+        # Замовлення з сайту
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS web_orders (
+                id         TEXT PRIMARY KEY,
+                name       TEXT,
+                phone      TEXT,
+                cart_json  TEXT,
+                status     TEXT DEFAULT 'new',
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Додаткові колонки до products (якщо ще не існують)
+        for col_sql in [
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS old_price REAL DEFAULT NULL",
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS is_new INTEGER DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS is_hit INTEGER DEFAULT 0",
+        ]:
+            await conn.execute(col_sql)
+
         print("OK: Всі таблиці створено успішно")
+    finally:
+        await conn.close()
 
 
 if __name__ == "__main__":

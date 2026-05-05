@@ -1,8 +1,9 @@
 # Telegram бот
 aiogram==3.27.0
 
-# База даних
-aiosqlite==0.22.1
+# База даних (PostgreSQL)
+asyncpg==0.31.0
+psycopg2-binary==2.9.12
 
 # Планувальник задач
 apscheduler==3.11.2

@@ -1,37 +1,37 @@
 import logging
 import os
-import aiosqlite
+import asyncpg
 from datetime import datetime, timedelta
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot
 
 logger = logging.getLogger(__name__)
 
-DATABASE_URL = os.getenv("DATABASE_URL", "vape_shop.db").replace("sqlite:///", "")
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:jHInKjjHzgONUJeWLNNkoxIumLhqIjIs@tramway.proxy.rlwy.net:56512/railway"
+)
 
 
 async def send_monday_broadcast(bot: Bot):
     """Авторозсилка щопонеділка — береться шаблон з БД."""
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
         # Вибрати шаблон який найдавніше використовувався
-        async with db.execute("""
+        template = await conn.fetchrow("""
             SELECT * FROM broadcast_templates
             ORDER BY last_used ASC NULLS FIRST
             LIMIT 1
-        """) as cursor:
-            template = await cursor.fetchone()
+        """)
 
         if not template:
             logger.info("Авторозсилка: немає шаблонів у БД.")
             return
 
         # Отримати всіх підписаних клієнтів
-        async with db.execute(
-            "SELECT telegram_id FROM customers WHERE is_subscribed = 1"
-        ) as cursor:
-            customers = await cursor.fetchall()
+        customers = await conn.fetch(
+            "SELECT telegram_id FROM customers WHERE is_subscribed = TRUE"
+        )
 
         sent = 0
         errors = 0
@@ -43,18 +43,19 @@ async def send_monday_broadcast(bot: Bot):
                 errors += 1
 
         # Оновити статистику шаблону
-        await db.execute("""
+        await conn.execute("""
             UPDATE broadcast_templates
             SET used_count = used_count + 1, last_used = CURRENT_TIMESTAMP
-            WHERE id = ?
-        """, (template['id'],))
+            WHERE id = $1
+        """, template['id'])
 
         # Записати в лог розсилок
-        await db.execute(
-            "INSERT INTO broadcasts (text, sent_count, error_count) VALUES (?, ?, ?)",
-            (template['text'], sent, errors)
+        await conn.execute(
+            "INSERT INTO broadcasts (text, sent_count, error_count) VALUES ($1, $2, $3)",
+            template['text'], sent, errors
         )
-        await db.commit()
+    finally:
+        await conn.close()
 
     logger.info(f"Авторозсилка: надіслано {sent}, помилок {errors}")
 
@@ -63,16 +64,17 @@ async def send_21day_reminders(bot: Bot):
     """Нагадування клієнтам які не замовляли 21+ днів."""
     cutoff = (datetime.now() - timedelta(days=21)).strftime("%Y-%m-%d %H:%M:%S")
 
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("""
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        customers = await conn.fetch("""
             SELECT telegram_id FROM customers
-            WHERE is_subscribed = 1
+            WHERE is_subscribed = TRUE
               AND last_order IS NOT NULL
-              AND last_order < ?
+              AND last_order < $1
               AND total_orders > 0
-        """, (cutoff,)) as cursor:
-            customers = await cursor.fetchall()
+        """, cutoff)
+    finally:
+        await conn.close()
 
     sent = 0
     for c in customers:
@@ -98,35 +100,30 @@ async def send_weekly_report(bot: Bot):
 
     week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
 
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-
-        # Замовлення за тиждень
-        async with db.execute("""
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        stats = await conn.fetchrow("""
             SELECT COUNT(*) as cnt, COALESCE(SUM(total_price), 0) as total
             FROM orders
-            WHERE created_at >= ? AND status != 'cancelled'
-        """, (week_ago,)) as cursor:
-            stats = await cursor.fetchone()
+            WHERE created_at >= $1 AND status != 'cancelled'
+        """, week_ago)
 
-        # Нові клієнти за тиждень
-        async with db.execute("""
-            SELECT COUNT(*) as cnt FROM customers WHERE first_seen >= ?
-        """, (week_ago,)) as cursor:
-            new_clients = await cursor.fetchone()
+        new_clients = await conn.fetchrow("""
+            SELECT COUNT(*) as cnt FROM customers WHERE first_seen >= $1
+        """, week_ago)
 
-        # Топ товар за тиждень
-        async with db.execute("""
+        top_product = await conn.fetchrow("""
             SELECT p.name, SUM(oi.quantity) as sold
             FROM order_items oi
             JOIN products p ON oi.product_id = p.id
             JOIN orders o ON oi.order_id = o.id
-            WHERE o.created_at >= ? AND o.status != 'cancelled'
-            GROUP BY p.id
+            WHERE o.created_at >= $1 AND o.status != 'cancelled'
+            GROUP BY p.id, p.name
             ORDER BY sold DESC
             LIMIT 1
-        """, (week_ago,)) as cursor:
-            top_product = await cursor.fetchone()
+        """, week_ago)
+    finally:
+        await conn.close()
 
     top_text = f"{top_product['name']} ({top_product['sold']} шт)" if top_product else "—"
 
@@ -154,12 +151,13 @@ async def send_daily_site_report(bot: Bot):
     from datetime import date
     today = date.today().isoformat()
 
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT visits, bot_clicks FROM site_stats WHERE date = ?", (today,)
-        ) as cursor:
-            row = await cursor.fetchone()
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        row = await conn.fetchrow(
+            "SELECT visits, bot_clicks FROM site_stats WHERE date = $1", today
+        )
+    finally:
+        await conn.close()
 
     visits = row["visits"] if row else 0
     bot_clicks = row["bot_clicks"] if row else 0

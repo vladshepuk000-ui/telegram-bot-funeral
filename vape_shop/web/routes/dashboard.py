@@ -1,13 +1,16 @@
 import os
+import asyncpg
 from fastapi import APIRouter, Request, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-import aiosqlite
 from web.auth_utils import verify_session
 
 BASE_DIR = os.path.join(os.path.dirname(__file__), "..", "templates")
 templates = Jinja2Templates(directory=BASE_DIR)
-DATABASE_URL = os.getenv("DATABASE_URL", "vape_shop.db").replace("sqlite:///", "")
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:jHInKjjHzgONUJeWLNNkoxIumLhqIjIs@tramway.proxy.rlwy.net:56512/railway"
+)
 
 router = APIRouter()
 
@@ -17,35 +20,27 @@ async def dashboard(request: Request, session: str = Depends(verify_session)):
     if not session:
         return RedirectResponse(url="/login")
 
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-
-        async with db.execute("SELECT COUNT(*) as cnt FROM orders") as cur:
-            total_orders = (await cur.fetchone())["cnt"]
-
-        async with db.execute("SELECT COUNT(*) as cnt FROM orders WHERE status = 'new'") as cur:
-            new_orders = (await cur.fetchone())["cnt"]
-
-        async with db.execute("SELECT COALESCE(SUM(total_price), 0) as total FROM orders WHERE status = 'done'") as cur:
-            revenue = (await cur.fetchone())["total"]
-
-        async with db.execute("SELECT COUNT(*) as cnt FROM customers") as cur:
-            total_customers = (await cur.fetchone())["cnt"]
-
-        async with db.execute("SELECT COUNT(*) as cnt FROM products WHERE is_active = 1") as cur:
-            active_products = (await cur.fetchone())["cnt"]
-
-        async with db.execute("SELECT COUNT(*) as cnt FROM products WHERE is_active = 1 AND stock = 0") as cur:
-            out_of_stock = (await cur.fetchone())["cnt"]
-
-        async with db.execute("""
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        total_orders = await conn.fetchval("SELECT COUNT(*) FROM orders")
+        new_orders = await conn.fetchval("SELECT COUNT(*) FROM orders WHERE status = 'new'")
+        revenue = await conn.fetchval(
+            "SELECT COALESCE(SUM(total_price), 0) FROM orders WHERE status = 'done'"
+        )
+        total_customers = await conn.fetchval("SELECT COUNT(*) FROM customers")
+        active_products = await conn.fetchval("SELECT COUNT(*) FROM products WHERE is_active = TRUE")
+        out_of_stock = await conn.fetchval(
+            "SELECT COUNT(*) FROM products WHERE is_active = TRUE AND stock = 0"
+        )
+        recent_orders = await conn.fetch("""
             SELECT o.id, o.status, o.total_price, o.created_at,
                    c.username, c.telegram_id
             FROM orders o
             LEFT JOIN customers c ON o.customer_id = c.id
             ORDER BY o.created_at DESC LIMIT 5
-        """) as cur:
-            recent_orders = await cur.fetchall()
+        """)
+    finally:
+        await conn.close()
 
     return templates.TemplateResponse(request, "dashboard.html", {
         "total_orders": total_orders,

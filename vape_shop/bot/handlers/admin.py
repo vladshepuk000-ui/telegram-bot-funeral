@@ -1,6 +1,6 @@
 import os
 import logging
-import aiosqlite
+import asyncpg
 from aiogram import Router, F
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters import Command
@@ -13,7 +13,10 @@ from bot.handlers.review import send_review_request
 router = Router()
 logger = logging.getLogger(__name__)
 
-DATABASE_URL = os.getenv("DATABASE_URL", "vape_shop.db").replace("sqlite:///", "")
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:jHInKjjHzgONUJeWLNNkoxIumLhqIjIs@tramway.proxy.rlwy.net:56512/railway"
+)
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
 
 STATUS_MAP = {
@@ -46,9 +49,9 @@ async def cmd_orders(message: Message):
     if not is_admin(message.from_user.id):
         return
 
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("""
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        rows = await conn.fetch("""
             SELECT o.id, o.status, o.total_price, o.created_at,
                    c.telegram_id, c.username,
                    p.name as product_name, oi.quantity
@@ -58,8 +61,9 @@ async def cmd_orders(message: Message):
             LEFT JOIN products p ON oi.product_id = p.id
             ORDER BY o.created_at DESC
             LIMIT 10
-        """) as cursor:
-            rows = await cursor.fetchall()
+        """)
+    finally:
+        await conn.close()
 
     if not rows:
         await message.answer("Замовлень ще немає.")
@@ -84,7 +88,7 @@ async def cmd_orders(message: Message):
             f"#{r['id']} | {status}\n"
             f"{items_str} — {r['total_price']} грн\n"
             f"Клієнт: {username}\n"
-            f"Дата: {r['created_at'][:16]}\n\n"
+            f"Дата: {str(r['created_at'])[:16]}\n\n"
         )
 
     await message.answer(text)
@@ -106,29 +110,26 @@ async def cmd_setstatus(message: Message):
         )
         return
 
-    order_id = args[1]
+    order_id = int(args[1])
     new_status = args[2]
 
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-
-        # Перевірити чи існує замовлення
-        async with db.execute(
-            "SELECT o.*, c.telegram_id FROM orders o LEFT JOIN customers c ON o.customer_id = c.id WHERE o.id = ?",
-            (order_id,)
-        ) as cursor:
-            order = await cursor.fetchone()
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        order = await conn.fetchrow(
+            "SELECT o.*, c.telegram_id FROM orders o LEFT JOIN customers c ON o.customer_id = c.id WHERE o.id = $1",
+            order_id
+        )
 
         if not order:
             await message.answer(f"Замовлення #{order_id} не знайдено.")
             return
 
-        # Оновити статус
-        await db.execute(
-            "UPDATE orders SET status = ? WHERE id = ?",
-            (new_status, order_id)
+        await conn.execute(
+            "UPDATE orders SET status = $1 WHERE id = $2",
+            new_status, order_id
         )
-        await db.commit()
+    finally:
+        await conn.close()
 
     status_text = STATUS_MAP[new_status]
     await message.answer(f"✅ Замовлення #{order_id} → {status_text}")
@@ -147,7 +148,7 @@ async def cmd_setstatus(message: Message):
         # Запит відгуку при статусі "done"
         if new_status == "done":
             try:
-                review_text, review_kb = send_review_request(int(order_id))
+                review_text, review_kb = send_review_request(order_id)
                 await message.bot.send_message(
                     order['telegram_id'],
                     review_text,
@@ -292,22 +293,22 @@ async def save_product(message: Message, state: FSMContext, photos: list):
 
     main_photo = photos[0] if photos else None
 
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        cursor = await db.execute("""
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        product_id = await conn.fetchval("""
             INSERT INTO products (name, category, description, price, stock, photo_id)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            data['name'], data['category'], data['description'],
-            data['price'], data['stock'], main_photo
-        ))
-        product_id = cursor.lastrowid
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id
+        """, data['name'], data['category'], data['description'],
+            data['price'], data['stock'], main_photo)
 
         for i, pid in enumerate(photos):
-            await db.execute(
-                "INSERT INTO product_photos (product_id, photo_id, position) VALUES (?, ?, ?)",
-                (product_id, pid, i)
+            await conn.execute(
+                "INSERT INTO product_photos (product_id, photo_id, position) VALUES ($1, $2, $3)",
+                product_id, pid, i
             )
-        await db.commit()
+    finally:
+        await conn.close()
 
     photo_info = f"{len(photos)} фото" if photos else "без фото"
     await message.answer(
@@ -333,22 +334,22 @@ async def cmd_restock(message: Message):
     product_id = int(args[1])
     quantity = int(args[2])
 
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT name FROM products WHERE id = ?", (product_id,)
-        ) as cursor:
-            product = await cursor.fetchone()
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        product = await conn.fetchrow(
+            "SELECT name FROM products WHERE id = $1", product_id
+        )
 
         if not product:
             await message.answer(f"Товар #{product_id} не знайдено.")
             return
 
-        await db.execute(
-            "UPDATE products SET stock = stock + ? WHERE id = ?",
-            (quantity, product_id)
+        await conn.execute(
+            "UPDATE products SET stock = stock + $1 WHERE id = $2",
+            quantity, product_id
         )
-        await db.commit()
+    finally:
+        await conn.close()
 
     await message.answer(
         f"✅ Залишок товару <b>{product['name']}</b> поповнено на {quantity} шт."
@@ -378,12 +379,13 @@ async def cmd_removeproduct(message: Message):
     if not is_admin(message.from_user.id):
         return
 
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT id, name, price FROM products WHERE is_active = 1"
-        ) as cursor:
-            products = await cursor.fetchall()
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        products = await conn.fetch(
+            "SELECT id, name, price FROM products WHERE is_active = TRUE"
+        )
+    finally:
+        await conn.close()
 
     if not products:
         await message.answer("Немає активних товарів.")
@@ -406,17 +408,17 @@ async def cmd_removeproduct(message: Message):
 async def confirm_remove(callback: CallbackQuery):
     product_id = int(callback.data.replace("remove_", ""))
 
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT name FROM products WHERE id = ?", (product_id,)
-        ) as cursor:
-            product = await cursor.fetchone()
-
-        await db.execute(
-            "UPDATE products SET is_active = 0 WHERE id = ?", (product_id,)
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        product = await conn.fetchrow(
+            "SELECT name FROM products WHERE id = $1", product_id
         )
-        await db.commit()
+
+        await conn.execute(
+            "UPDATE products SET is_active = FALSE WHERE id = $1", product_id
+        )
+    finally:
+        await conn.close()
 
     await callback.message.edit_text(
         f"✅ Товар <b>{product['name']}</b> прибрано з каталогу."

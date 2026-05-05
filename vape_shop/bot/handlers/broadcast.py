@@ -1,6 +1,6 @@
 import os
 import logging
-import aiosqlite
+import asyncpg
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -10,7 +10,10 @@ from aiogram.fsm.state import State, StatesGroup
 router = Router()
 logger = logging.getLogger(__name__)
 
-DATABASE_URL = os.getenv("DATABASE_URL", "vape_shop.db").replace("sqlite:///", "")
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:jHInKjjHzgONUJeWLNNkoxIumLhqIjIs@tramway.proxy.rlwy.net:56512/railway"
+)
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
 
 
@@ -55,12 +58,13 @@ async def enter_broadcast_text(message: Message, state: FSMContext):
     await state.set_state(BroadcastForm.confirming)
 
     # Показати превью
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        async with db.execute(
-            "SELECT COUNT(*) as cnt FROM customers WHERE is_subscribed = 1"
-        ) as cursor:
-            row = await cursor.fetchone()
-            total = row[0]
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        total = await conn.fetchval(
+            "SELECT COUNT(*) FROM customers WHERE is_subscribed = TRUE"
+        )
+    finally:
+        await conn.close()
 
     await message.answer(
         f"📋 <b>Превью розсилки:</b>\n\n"
@@ -82,18 +86,16 @@ async def confirm_broadcast(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_reply_markup(reply_markup=None)
     status_msg = await callback.message.answer("⏳ Надсилаю...")
 
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
         if save_template:
-            await db.execute(
-                "INSERT INTO broadcast_templates (text) VALUES (?)", (text,)
+            await conn.execute(
+                "INSERT INTO broadcast_templates (text) VALUES ($1)", text
             )
 
-        async with db.execute(
-            "SELECT telegram_id FROM customers WHERE is_subscribed = 1"
-        ) as cursor:
-            customers = await cursor.fetchall()
+        customers = await conn.fetch(
+            "SELECT telegram_id FROM customers WHERE is_subscribed = TRUE"
+        )
 
         sent = 0
         errors = 0
@@ -104,11 +106,12 @@ async def confirm_broadcast(callback: CallbackQuery, state: FSMContext):
             except Exception:
                 errors += 1
 
-        await db.execute(
-            "INSERT INTO broadcasts (text, sent_count, error_count) VALUES (?, ?, ?)",
-            (text, sent, errors)
+        await conn.execute(
+            "INSERT INTO broadcasts (text, sent_count, error_count) VALUES ($1, $2, $3)",
+            text, sent, errors
         )
-        await db.commit()
+    finally:
+        await conn.close()
 
     await status_msg.edit_text(
         f"✅ Розсилку завершено!\n\n"
@@ -142,11 +145,13 @@ async def cmd_addtemplate(message: Message, state: FSMContext):
         )
         return
 
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        await db.execute(
-            "INSERT INTO broadcast_templates (text) VALUES (?)", (text,)
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        await conn.execute(
+            "INSERT INTO broadcast_templates (text) VALUES ($1)", text
         )
-        await db.commit()
+    finally:
+        await conn.close()
 
     await message.answer("✅ Шаблон збережено! Він буде використаний в авторозсилці.")
 
@@ -157,12 +162,13 @@ async def cmd_templates(message: Message):
     if not is_admin(message.from_user.id):
         return
 
-    async with aiosqlite.connect(DATABASE_URL) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        templates = await conn.fetch(
             "SELECT * FROM broadcast_templates ORDER BY last_used ASC NULLS FIRST"
-        ) as cursor:
-            templates = await cursor.fetchall()
+        )
+    finally:
+        await conn.close()
 
     if not templates:
         await message.answer(
@@ -173,7 +179,7 @@ async def cmd_templates(message: Message):
 
     text = "📋 <b>Шаблони авторозсилки:</b>\n\n"
     for t in templates:
-        used = t['last_used'][:10] if t['last_used'] else "ніколи"
+        used = str(t['last_used'])[:10] if t['last_used'] else "ніколи"
         text += (
             f"#{t['id']} (використано: {t['used_count']}р, останній раз: {used})\n"
             f"{t['text'][:80]}{'...' if len(t['text']) > 80 else ''}\n\n"
