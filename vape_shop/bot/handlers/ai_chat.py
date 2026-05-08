@@ -27,7 +27,7 @@ SYSTEM_PROMPT = (
 
 
 async def get_daily_usage(conn, customer_id: int) -> int:
-    today = date.today().isoformat()
+    today = date.today()
     row = await conn.fetchrow(
         "SELECT count FROM ai_usage WHERE customer_id = $1 AND date = $2",
         customer_id, today
@@ -36,7 +36,7 @@ async def get_daily_usage(conn, customer_id: int) -> int:
 
 
 async def increment_daily_usage(conn, customer_id: int):
-    today = date.today().isoformat()
+    today = date.today()
     await conn.execute("""
         INSERT INTO ai_usage (customer_id, date, count) VALUES ($1, $2, 1)
         ON CONFLICT (customer_id, date) DO UPDATE SET count = ai_usage.count + 1
