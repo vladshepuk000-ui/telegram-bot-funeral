@@ -373,6 +373,113 @@ async def cmd_restock(message: Message):
         await message.answer(f"Сповіщено {sent} клієнтів з листа очікування.")
 
 
+# ── /звіт — тижневий звіт ──
+@router.message(Command("звіт"))
+async def cmd_report(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        # Загальна статистика за 7 днів
+        week_stats = await conn.fetchrow("""
+            SELECT
+                COUNT(*) as total_orders,
+                COALESCE(SUM(total_price), 0) as total_revenue,
+                COALESCE(AVG(total_price), 0) as avg_order
+            FROM orders
+            WHERE created_at >= NOW() - INTERVAL '7 days'
+              AND status != 'cancelled'
+        """)
+
+        # Порівняння з попереднім тижнем
+        prev_stats = await conn.fetchrow("""
+            SELECT COALESCE(SUM(total_price), 0) as prev_revenue
+            FROM orders
+            WHERE created_at >= NOW() - INTERVAL '14 days'
+              AND created_at < NOW() - INTERVAL '7 days'
+              AND status != 'cancelled'
+        """)
+
+        # Замовлення по статусах за тиждень
+        statuses = await conn.fetch("""
+            SELECT status, COUNT(*) as cnt
+            FROM orders
+            WHERE created_at >= NOW() - INTERVAL '7 days'
+            GROUP BY status
+            ORDER BY cnt DESC
+        """)
+
+        # Топ-3 товари за тиждень
+        top_products = await conn.fetch("""
+            SELECT p.name, SUM(oi.quantity) as sold, SUM(oi.quantity * oi.price_at_order) as revenue
+            FROM order_items oi
+            JOIN products p ON oi.product_id = p.id
+            JOIN orders o ON oi.order_id = o.id
+            WHERE o.created_at >= NOW() - INTERVAL '7 days'
+              AND o.status != 'cancelled'
+            GROUP BY p.name
+            ORDER BY sold DESC
+            LIMIT 3
+        """)
+
+        # Нові клієнти за тиждень
+        new_customers = await conn.fetchval("""
+            SELECT COUNT(*) FROM customers
+            WHERE first_seen >= NOW() - INTERVAL '7 days'
+        """)
+
+        # Товари що закінчуються
+        low_stock = await conn.fetch("""
+            SELECT name, stock FROM products
+            WHERE is_active = TRUE AND stock <= 3
+            ORDER BY stock
+        """)
+
+    finally:
+        await conn.close()
+
+    # Динаміка відносно минулого тижня
+    prev_rev = float(prev_stats['prev_revenue'])
+    curr_rev = float(week_stats['total_revenue'])
+    if prev_rev > 0:
+        diff_pct = ((curr_rev - prev_rev) / prev_rev) * 100
+        trend = f"{'📈' if diff_pct >= 0 else '📉'} {diff_pct:+.0f}% vs минулий тиждень"
+    else:
+        trend = "📊 Перший тиждень даних"
+
+    text = (
+        f"📊 <b>Звіт за 7 днів</b>\n"
+        f"{'─' * 28}\n\n"
+        f"💰 <b>Виручка:</b> {curr_rev:.0f} грн\n"
+        f"   {trend}\n\n"
+        f"🛒 <b>Замовлень:</b> {week_stats['total_orders']}\n"
+        f"💳 <b>Середній чек:</b> {week_stats['avg_order']:.0f} грн\n"
+        f"👤 <b>Нових клієнтів:</b> {new_customers}\n\n"
+    )
+
+    if statuses:
+        text += "📋 <b>По статусах:</b>\n"
+        for s in statuses:
+            label = STATUS_MAP.get(s['status'], s['status'])
+            text += f"   {label}: {s['cnt']}\n"
+        text += "\n"
+
+    if top_products:
+        text += "🏆 <b>Топ товари:</b>\n"
+        for i, p in enumerate(top_products, 1):
+            text += f"   {i}. {p['name']} — {p['sold']} шт ({p['revenue']:.0f} грн)\n"
+        text += "\n"
+
+    if low_stock:
+        text += "⚠️ <b>Закінчується:</b>\n"
+        for p in low_stock:
+            stock_icon = "🔴" if p['stock'] == 0 else "🟡"
+            text += f"   {stock_icon} {p['name']} — {p['stock']} шт\n"
+
+    await message.answer(text)
+
+
 # ── /removeproduct — видалити товар ──
 @router.message(Command("removeproduct"))
 async def cmd_removeproduct(message: Message):

@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import BotCommand
 
 from bot.handlers import start, catalog, faq, contact, order, admin, repeat_order, waitlist, edit_product, broadcast, review, ai_chat
 from bot.scheduler import setup_scheduler
@@ -50,6 +51,18 @@ async def main():
     dp.include_router(broadcast.router)
     dp.include_router(review.router)
     dp.include_router(ai_chat.router)  # останній — ловить все що не підійшло іншим
+
+    # Меню команд для адміна
+    await bot.set_my_commands([
+        BotCommand(command="start", description="Головне меню"),
+        BotCommand(command="orders", description="Останні замовлення"),
+        BotCommand(command="звіт", description="Тижневий звіт"),
+        BotCommand(command="addproduct", description="Додати товар"),
+        BotCommand(command="removeproduct", description="Видалити товар"),
+        BotCommand(command="restock", description="Поповнити залишок"),
+        BotCommand(command="setstatus", description="Змінити статус замовлення"),
+        BotCommand(command="broadcast", description="Розсилка"),
+    ])
 
     # Запустити планувальник
     scheduler = setup_scheduler(bot)
