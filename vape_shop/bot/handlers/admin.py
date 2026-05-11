@@ -374,7 +374,7 @@ async def cmd_restock(message: Message):
 
 
 # ── /звіт — тижневий звіт ──
-@router.message(Command("звіт"))
+@router.message(Command("zvit"))
 async def cmd_report(message: Message):
     if not is_admin(message.from_user.id):
         return

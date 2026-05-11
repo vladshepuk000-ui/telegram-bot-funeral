@@ -56,7 +56,7 @@ async def main():
     await bot.set_my_commands([
         BotCommand(command="start", description="Головне меню"),
         BotCommand(command="orders", description="Останні замовлення"),
-        BotCommand(command="звіт", description="Тижневий звіт"),
+        BotCommand(command="zvit", description="Тижневий звіт"),
         BotCommand(command="addproduct", description="Додати товар"),
         BotCommand(command="removeproduct", description="Видалити товар"),
         BotCommand(command="restock", description="Поповнити залишок"),
