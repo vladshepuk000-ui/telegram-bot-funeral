@@ -109,51 +109,134 @@ async def send_21day_reminders(bot: Bot):
 
 
 async def send_weekly_report(bot: Bot):
-    """Щотижневий звіт адміну."""
+    """Щотижневий розширений звіт адміну."""
     admin_ids = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
     if not admin_ids:
         return
 
     week_ago = datetime.now() - timedelta(days=7)
+    prev_start = datetime.now() - timedelta(days=14)
 
     conn = await asyncpg.connect(DATABASE_URL)
     try:
-        stats = await conn.fetchrow("""
-            SELECT COUNT(*) as cnt, COALESCE(SUM(total_price), 0) as total
-            FROM orders
-            WHERE created_at >= $1 AND status != 'cancelled'
+        week = await conn.fetchrow("""
+            SELECT
+                COUNT(*) FILTER (WHERE status != 'cancelled') as total_orders,
+                COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled,
+                COALESCE(SUM(total_price) FILTER (WHERE status != 'cancelled'), 0) as revenue,
+                COALESCE(AVG(total_price) FILTER (WHERE status != 'cancelled'), 0) as avg_order
+            FROM orders WHERE created_at >= $1
         """, week_ago)
 
-        new_clients = await conn.fetchrow("""
-            SELECT COUNT(*) as cnt FROM customers WHERE first_seen >= $1
-        """, week_ago)
+        prev = await conn.fetchrow("""
+            SELECT
+                COUNT(*) FILTER (WHERE status != 'cancelled') as total_orders,
+                COALESCE(SUM(total_price) FILTER (WHERE status != 'cancelled'), 0) as revenue,
+                COALESCE(AVG(total_price) FILTER (WHERE status != 'cancelled'), 0) as avg_order
+            FROM orders WHERE created_at >= $1 AND created_at < $2
+        """, prev_start, week_ago)
 
-        top_product = await conn.fetchrow("""
-            SELECT p.name, SUM(oi.quantity) as sold
+        top_week = await conn.fetch("""
+            SELECT p.name, SUM(oi.quantity) as sold, SUM(oi.quantity * oi.price_at_order) as revenue
             FROM order_items oi
             JOIN products p ON oi.product_id = p.id
             JOIN orders o ON oi.order_id = o.id
             WHERE o.created_at >= $1 AND o.status != 'cancelled'
-            GROUP BY p.id, p.name
-            ORDER BY sold DESC
-            LIMIT 1
+            GROUP BY p.name ORDER BY sold DESC LIMIT 3
         """, week_ago)
+
+        new_customers = await conn.fetchval(
+            "SELECT COUNT(*) FROM customers WHERE first_seen >= $1", week_ago)
+        prev_new_customers = await conn.fetchval(
+            "SELECT COUNT(*) FROM customers WHERE first_seen >= $1 AND first_seen < $2",
+            prev_start, week_ago)
+
+        repeat_orders = await conn.fetchval("""
+            SELECT COUNT(DISTINCT o.customer_id) FROM orders o
+            WHERE o.created_at >= $1 AND o.status != 'cancelled'
+              AND (SELECT COUNT(*) FROM orders o2
+                   WHERE o2.customer_id = o.customer_id
+                     AND o2.created_at < $1) > 0
+        """, week_ago)
+
+        low_stock = await conn.fetch("""
+            SELECT name, stock FROM products
+            WHERE is_active = TRUE AND stock <= 3 ORDER BY stock
+        """)
     finally:
         await conn.close()
 
-    top_text = f"{top_product['name']} ({top_product['sold']} шт)" if top_product else "—"
+    def diff_str(curr, prev):
+        if prev == 0:
+            return ""
+        d = ((curr - prev) / prev) * 100
+        icon = "📈" if d >= 0 else "📉"
+        return f" {icon} {d:+.0f}%"
 
-    report = (
-        f"📊 <b>Тижневий звіт</b>\n\n"
-        f"Замовлень: {stats['cnt']}\n"
-        f"Сума: {stats['total']:.0f} грн\n"
-        f"Нових клієнтів: {new_clients['cnt']}\n"
-        f"Топ товар: {top_text}"
-    )
+    curr_rev = float(week['revenue'])
+    prev_rev = float(prev['revenue'])
+    curr_orders = int(week['total_orders'])
+    prev_orders = int(prev['total_orders'])
+    curr_avg = float(week['avg_order'])
+    prev_avg = float(prev['avg_order'])
+
+    text = f"📊 <b>Звіт за 7 днів</b>\n{'─' * 28}\n\n"
+    text += f"💰 <b>Виручка:</b> {curr_rev:.0f} грн{diff_str(curr_rev, prev_rev)}\n"
+    text += f"   Минулий тиждень: {prev_rev:.0f} грн\n\n"
+    text += f"🛒 <b>Замовлень:</b> {curr_orders}{diff_str(curr_orders, prev_orders)}\n"
+    text += f"   Минулий тиждень: {prev_orders}\n"
+    if week['cancelled']:
+        text += f"   Скасовано: {week['cancelled']}\n"
+    text += "\n"
+    text += f"💳 <b>Середній чек:</b> {curr_avg:.0f} грн{diff_str(curr_avg, prev_avg)}\n"
+    text += f"   Минулий тиждень: {prev_avg:.0f} грн\n\n"
+    text += f"👤 <b>Нових клієнтів:</b> {new_customers}{diff_str(new_customers, prev_new_customers)}\n"
+    if repeat_orders:
+        text += f"🔄 <b>Повторних покупців:</b> {repeat_orders}\n"
+    text += "\n"
+
+    if top_week:
+        text += "🏆 <b>Топ товари:</b>\n"
+        for i, p in enumerate(top_week, 1):
+            text += f"   {i}. {p['name']} — {p['sold']} шт ({p['revenue']:.0f} грн)\n"
+        text += "\n"
+
+    text += "🔍 <b>Аналіз:</b>\n"
+    if curr_rev > prev_rev:
+        text += f"   ✅ Виручка зросла на {curr_rev - prev_rev:.0f} грн\n"
+    elif curr_rev < prev_rev:
+        text += f"   ⚠️ Виручка впала на {prev_rev - curr_rev:.0f} грн\n"
+    if new_customers > prev_new_customers:
+        text += f"   ✅ Більше нових клієнтів ніж минулого тижня\n"
+    elif new_customers < prev_new_customers:
+        text += f"   ⚠️ Менше нових клієнтів ніж минулого тижня\n"
+    if curr_avg < prev_avg:
+        text += f"   ⚠️ Середній чек впав\n"
+    text += "\n"
+
+    tips = []
+    if curr_rev < prev_rev and curr_orders < prev_orders:
+        tips.append("Падіння — варто зробити розсилку або акцію")
+    if curr_avg < prev_avg:
+        tips.append("Середній чек впав — пропонуй картридж + жижа разом")
+    if any(p['stock'] == 0 for p in low_stock):
+        tips.append("Є товари з нульовим залишком — поповни")
+    if not tips:
+        tips.append("Все стабільно — продовжуй в тому ж темпі")
+
+    text += "💡 <b>Поради:</b>\n"
+    for tip in tips:
+        text += f"   • {tip}\n"
+
+    if low_stock:
+        text += "\n⚠️ <b>Закінчується:</b>\n"
+        for p in low_stock:
+            icon = "🔴" if p['stock'] == 0 else "🟡"
+            text += f"   {icon} {p['name']} — {p['stock']} шт\n"
 
     for admin_id in admin_ids:
         try:
-            await bot.send_message(admin_id, report)
+            await bot.send_message(admin_id, text, parse_mode="HTML")
         except Exception as e:
             logger.error(f"Не вдалось надіслати звіт адміну {admin_id}: {e}")
 
