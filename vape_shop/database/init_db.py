@@ -141,6 +141,16 @@ async def create_tables():
             )
         """)
 
+        # Лог нагадувань клієнтам
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS reminder_logs (
+                id          SERIAL PRIMARY KEY,
+                telegram_id BIGINT NOT NULL,
+                username    TEXT,
+                sent_at     TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # Статистика сайту
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS site_stats (

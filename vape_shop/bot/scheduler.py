@@ -67,7 +67,7 @@ async def send_21day_reminders(bot: Bot):
     conn = await asyncpg.connect(DATABASE_URL)
     try:
         customers = await conn.fetch("""
-            SELECT telegram_id FROM customers
+            SELECT telegram_id, username FROM customers
             WHERE is_subscribed = TRUE
               AND last_order IS NOT NULL
               AND last_order < $1
@@ -77,19 +77,27 @@ async def send_21day_reminders(bot: Bot):
         await conn.close()
 
     sent = 0
-    for c in customers:
-        try:
-            await bot.send_message(
-                c['telegram_id'],
-                "👋 Давно не бачились!\n\n"
-                "Завітай до нашого магазину — можливо вже є щось нове 👉 /start"
-            )
-            sent += 1
-        except Exception:
-            pass
+    log_conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        for c in customers:
+            try:
+                await bot.send_message(
+                    c['telegram_id'],
+                    "👋 Давно не бачились!\n\n"
+                    "Завітай до нашого магазину — можливо вже є щось нове 👉 /start"
+                )
+                await log_conn.execute(
+                    "INSERT INTO reminder_logs (telegram_id, username) VALUES ($1, $2)",
+                    c['telegram_id'], c.get('username')
+                )
+                sent += 1
+            except Exception:
+                pass
+    finally:
+        await log_conn.close()
 
     if sent:
-        logger.info(f"Нагадування 21 день: надіслано {sent} клієнтам")
+        logger.info(f"Нагадування 18 днів: надіслано {sent} клієнтам")
 
 
 async def send_weekly_report(bot: Bot):
