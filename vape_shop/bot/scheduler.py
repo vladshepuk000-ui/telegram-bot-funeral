@@ -98,6 +98,14 @@ async def send_21day_reminders(bot: Bot):
 
     if sent:
         logger.info(f"Нагадування 18 днів: надіслано {sent} клієнтам")
+        admin_ids = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
+        usernames = [f"@{c['username']}" if c['username'] else f"id:{c['telegram_id']}" for c in customers[:sent]]
+        report = f"📩 Нагадування відправлено {sent} клієнтам:\n" + "\n".join(usernames)
+        for admin_id in admin_ids:
+            try:
+                await bot.send_message(admin_id, report)
+            except Exception:
+                pass
 
 
 async def send_weekly_report(bot: Bot):
