@@ -62,7 +62,7 @@ async def send_monday_broadcast(bot: Bot):
 
 async def send_21day_reminders(bot: Bot):
     """Нагадування клієнтам які не замовляли 21+ днів."""
-    cutoff = datetime.now() - timedelta(days=21)
+    cutoff = datetime.now() - timedelta(days=18)
 
     conn = await asyncpg.connect(DATABASE_URL)
     try:
