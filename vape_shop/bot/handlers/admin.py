@@ -37,6 +37,7 @@ def is_admin(user_id: int) -> bool:
 class AddProduct(StatesGroup):
     name        = State()
     category    = State()
+    brand       = State()
     description = State()
     price       = State()
     stock       = State()
@@ -192,9 +193,52 @@ async def add_name(message: Message, state: FSMContext):
 async def add_category(callback: CallbackQuery, state: FSMContext):
     category = callback.data.replace("addcat_", "")
     await state.update_data(category=category)
+
+    if category == "liquids":
+        await state.set_state(AddProduct.brand)
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            rows = await conn.fetch("""
+                SELECT DISTINCT brand FROM products
+                WHERE category = 'liquids' AND is_active = TRUE AND brand IS NOT NULL
+                ORDER BY brand
+            """)
+            existing_brands = [r['brand'] for r in rows]
+        finally:
+            await conn.close()
+
+        buttons = [[InlineKeyboardButton(text=b, callback_data=f"addbrand_{b}")] for b in existing_brands]
+        buttons.append([InlineKeyboardButton(text="➕ Новий виробник", callback_data="addbrand_new")])
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await callback.message.answer("Обери виробника або додай нового:", reply_markup=kb)
+    else:
+        await state.update_data(brand=None)
+        await state.set_state(AddProduct.description)
+        await callback.message.answer("Введи опис товару (смак, міцність тощо):")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("addbrand_"))
+async def add_brand_select(callback: CallbackQuery, state: FSMContext):
+    brand_val = callback.data.replace("addbrand_", "")
+    if brand_val == "new":
+        await callback.message.answer("Введи назву виробника (наприклад: FL_350):")
+        await callback.answer()
+        return
+    await state.update_data(brand=brand_val)
     await state.set_state(AddProduct.description)
     await callback.message.answer("Введи опис товару (смак, міцність тощо):")
     await callback.answer()
+
+
+@router.message(AddProduct.brand)
+async def add_brand_text(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer("Введи назву виробника текстом:")
+        return
+    await state.update_data(brand=message.text.strip())
+    await state.set_state(AddProduct.description)
+    await message.answer("Введи опис товару (смак, міцність тощо):")
 
 
 @router.message(AddProduct.description)
@@ -296,10 +340,10 @@ async def save_product(message: Message, state: FSMContext, photos: list):
     conn = await asyncpg.connect(DATABASE_URL)
     try:
         product_id = await conn.fetchval("""
-            INSERT INTO products (name, category, description, price, stock, photo_id)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO products (name, category, brand, description, price, stock, photo_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING id
-        """, data['name'], data['category'], data['description'],
+        """, data['name'], data['category'], data.get('brand'), data['description'],
             data['price'], data['stock'], main_photo)
 
         for i, pid in enumerate(photos):

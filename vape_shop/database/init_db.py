@@ -177,6 +177,7 @@ async def create_tables():
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS old_price REAL DEFAULT NULL",
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS is_new INTEGER DEFAULT 0",
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS is_hit INTEGER DEFAULT 0",
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS brand TEXT DEFAULT NULL",
         ]:
             await conn.execute(col_sql)
 

@@ -27,27 +27,62 @@ def categories_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def products_keyboard(products: list, category: str) -> InlineKeyboardMarkup:
+def brands_keyboard(brands: list) -> InlineKeyboardMarkup:
     buttons = [
-        [InlineKeyboardButton(text=f"{p['name']} — {p['price']} грн", callback_data=f"product_{p['id']}_{category}")]
-        for p in products
+        [InlineKeyboardButton(text=brand, callback_data=f"lbrand_{brand}")]
+        for brand in brands
     ]
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="cat_back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def product_keyboard(product_id: int, category: str, in_stock: bool = True) -> InlineKeyboardMarkup:
+def products_keyboard(products: list, back_callback: str) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text=f"{p['name']} — {p['price']} грн", callback_data=f"product_{p['id']}_{back_callback}")]
+        for p in products
+    ]
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_callback)])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def product_keyboard(product_id: int, back_callback: str, in_stock: bool = True) -> InlineKeyboardMarkup:
     if in_stock:
         buttons = [
             [InlineKeyboardButton(text="🛒 Замовити", callback_data=f"buy_{product_id}")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"cat_{category}")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=back_callback)],
         ]
     else:
         buttons = [
             [InlineKeyboardButton(text="🔔 Сповісти коли з'явиться", callback_data=f"waitlist_{product_id}")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"cat_{category}")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=back_callback)],
         ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+async def get_liquid_brands() -> list:
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        rows = await conn.fetch("""
+            SELECT DISTINCT brand FROM products
+            WHERE category = 'liquids' AND is_active = TRUE AND brand IS NOT NULL
+            ORDER BY brand
+        """)
+        return [r['brand'] for r in rows]
+    finally:
+        await conn.close()
+
+
+async def get_products_by_brand(brand: str) -> list:
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        rows = await conn.fetch("""
+            SELECT * FROM products
+            WHERE category = 'liquids' AND brand = $1 AND is_active = TRUE
+            ORDER BY name
+        """, brand)
+        return [dict(r) for r in rows]
+    finally:
+        await conn.close()
 
 
 # ── Кнопка "Каталог" з головного меню ──
@@ -80,10 +115,59 @@ async def show_category(callback):
 
     if category == "all":
         products = await get_all_products()
-        title = "Всі товари"
-    else:
+        if not products:
+            await callback.answer("Товарів немає", show_alert=True)
+            return
+        try:
+            await callback.message.edit_text(
+                "📦 Всі товари:",
+                reply_markup=products_keyboard(products, "cat_back")
+            )
+        except Exception:
+            await callback.message.answer(
+                "📦 Всі товари:",
+                reply_markup=products_keyboard(products, "cat_back")
+            )
+        await callback.answer()
+        return
+
+    # Рідини — показуємо бренди
+    if category == "liquids":
+        brands = await get_liquid_brands()
+        if brands:
+            try:
+                await callback.message.edit_text(
+                    "🧴 Оберіть виробника:",
+                    reply_markup=brands_keyboard(brands)
+                )
+            except Exception:
+                await callback.message.answer(
+                    "🧴 Оберіть виробника:",
+                    reply_markup=brands_keyboard(brands)
+                )
+            await callback.answer()
+            return
+        # Якщо брендів немає — показуємо всі рідини напряму
         products = await get_products_by_category(category)
-        title = CATEGORIES.get(category, category)
+        if not products:
+            await callback.answer("Товарів в цій категорії немає", show_alert=True)
+            return
+        try:
+            await callback.message.edit_text(
+                "📦 Рідини:",
+                reply_markup=products_keyboard(products, "cat_back")
+            )
+        except Exception:
+            await callback.message.answer(
+                "📦 Рідини:",
+                reply_markup=products_keyboard(products, "cat_back")
+            )
+        await callback.answer()
+        return
+
+    # Інші категорії — одразу список товарів
+    products = await get_products_by_category(category)
+    title = CATEGORIES.get(category, category)
 
     if not products:
         await callback.answer("Товарів в цій категорії немає", show_alert=True)
@@ -92,12 +176,36 @@ async def show_category(callback):
     try:
         await callback.message.edit_text(
             f"📦 {title}:",
-            reply_markup=products_keyboard(products, category)
+            reply_markup=products_keyboard(products, "cat_back")
         )
     except Exception:
         await callback.message.answer(
             f"📦 {title}:",
-            reply_markup=products_keyboard(products, category)
+            reply_markup=products_keyboard(products, "cat_back")
+        )
+    await callback.answer()
+
+
+# ── Вибір бренду рідин ──
+@router.callback_query(F.data.startswith("lbrand_"))
+async def show_brand_products(callback):
+    brand = callback.data.replace("lbrand_", "")
+    products = await get_products_by_brand(brand)
+
+    if not products:
+        await callback.answer("Товарів цього виробника немає", show_alert=True)
+        return
+
+    back_callback = f"lbrand_{brand}"
+    try:
+        await callback.message.edit_text(
+            f"🧴 {brand}:",
+            reply_markup=products_keyboard(products, back_callback)
+        )
+    except Exception:
+        await callback.message.answer(
+            f"🧴 {brand}:",
+            reply_markup=products_keyboard(products, back_callback)
         )
     await callback.answer()
 
@@ -107,7 +215,7 @@ async def show_category(callback):
 async def show_product(callback):
     parts = callback.data.replace("product_", "").split("_", 1)
     product_id = int(parts[0])
-    category = parts[1] if len(parts) > 1 else "back"
+    back_callback = parts[1] if len(parts) > 1 else "cat_back"
     product = await get_product_by_id(product_id)
 
     if not product:
@@ -124,9 +232,8 @@ async def show_product(callback):
     )
 
     in_stock = product['stock'] > 0
-    kb = product_keyboard(product_id, category, in_stock)
+    kb = product_keyboard(product_id, back_callback, in_stock)
 
-    # Отримати всі фото товару
     conn = await asyncpg.connect(DATABASE_URL)
     try:
         rows = await conn.fetch(
@@ -137,17 +244,16 @@ async def show_product(callback):
         await conn.close()
     photos = [r["photo_id"] for r in rows]
 
-    # Якщо в product_photos немає — використати старе photo_id
     if not photos and product['photo_id']:
         photos = [product['photo_id']]
 
     if len(photos) > 1:
         media = [InputMediaPhoto(media=p) for p in photos]
         await callback.message.answer_media_group(media)
-        await callback.message.answer(text, reply_markup=kb)
+        await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
     elif len(photos) == 1:
-        await callback.message.answer_photo(photos[0], caption=text, reply_markup=kb)
+        await callback.message.answer_photo(photos[0], caption=text, reply_markup=kb, parse_mode="HTML")
     else:
-        await callback.message.answer(text, reply_markup=kb)
+        await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
 
     await callback.answer()
