@@ -100,6 +100,10 @@ async def handle_ai_message(message: Message):
     if not api_key or api_key == "your_groq_api_key_here":
         return
 
+    admin_ids = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
+    if message.from_user.id in admin_ids:
+        return
+
     ai_daily_limit = int(os.getenv("AI_DAILY_LIMIT", "30"))
     user_text = message.text.strip()
 
