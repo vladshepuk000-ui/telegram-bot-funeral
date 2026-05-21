@@ -36,12 +36,14 @@ def brands_keyboard(brands: list) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def products_keyboard(products: list, back_callback: str) -> InlineKeyboardMarkup:
+def products_keyboard(products: list, list_back: str, item_back: str = None) -> InlineKeyboardMarkup:
+    if item_back is None:
+        item_back = list_back
     buttons = [
-        [InlineKeyboardButton(text=f"{p['name']} — {p['price']} грн", callback_data=f"product_{p['id']}_{back_callback}")]
+        [InlineKeyboardButton(text=f"{p['name']} — {p['price']} грн", callback_data=f"product_{p['id']}_{item_back}")]
         for p in products
     ]
-    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=back_callback)])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=list_back)])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -136,12 +138,12 @@ async def show_category(callback):
         try:
             await callback.message.edit_text(
                 "📦 Всі товари:",
-                reply_markup=products_keyboard(products, "cat_back")
+                reply_markup=products_keyboard(products, "cat_back", "cat_back")
             )
         except Exception:
             await callback.message.answer(
                 "📦 Всі товари:",
-                reply_markup=products_keyboard(products, "cat_back")
+                reply_markup=products_keyboard(products, "cat_back", "cat_back")
             )
         await callback.answer()
         return
@@ -170,12 +172,12 @@ async def show_category(callback):
         try:
             await callback.message.edit_text(
                 "📦 Рідини:",
-                reply_markup=products_keyboard(products, "cat_back")
+                reply_markup=products_keyboard(products, "cat_back", "cat_liquids")
             )
         except Exception:
             await callback.message.answer(
                 "📦 Рідини:",
-                reply_markup=products_keyboard(products, "cat_back")
+                reply_markup=products_keyboard(products, "cat_back", "cat_liquids")
             )
         await callback.answer()
         return
@@ -191,12 +193,12 @@ async def show_category(callback):
     try:
         await callback.message.edit_text(
             f"📦 {title}:",
-            reply_markup=products_keyboard(products, "cat_back")
+            reply_markup=products_keyboard(products, "cat_back", f"cat_{category}")
         )
     except Exception:
         await callback.message.answer(
             f"📦 {title}:",
-            reply_markup=products_keyboard(products, "cat_back")
+            reply_markup=products_keyboard(products, "cat_back", f"cat_{category}")
         )
     await callback.answer()
 
@@ -212,15 +214,16 @@ async def show_brand_products(callback):
         return
 
     label = "Інші рідини" if brand == "__no_brand__" else brand
+    item_back = f"lbrand_{brand}"
     try:
         await callback.message.edit_text(
             f"🧴 {label}:",
-            reply_markup=products_keyboard(products, "back_to_brands")
+            reply_markup=products_keyboard(products, "back_to_brands", item_back)
         )
     except Exception:
         await callback.message.answer(
             f"🧴 {label}:",
-            reply_markup=products_keyboard(products, "back_to_brands")
+            reply_markup=products_keyboard(products, "back_to_brands", item_back)
         )
     await callback.answer()
 
@@ -246,11 +249,14 @@ async def back_to_brands(callback):
 @router.callback_query(F.data.startswith("product_"))
 async def show_product(callback):
     # format: product_{id}_{back_callback}
-    # back_callback може містити _ тому split лише перший раз
     data = callback.data[len("product_"):]
-    first_underscore = data.index("_")
-    product_id = int(data[:first_underscore])
-    back_callback = data[first_underscore + 1:] if first_underscore + 1 < len(data) else "cat_back"
+    try:
+        first_underscore = data.index("_")
+        product_id = int(data[:first_underscore])
+        back_callback = data[first_underscore + 1:] if first_underscore + 1 < len(data) else "cat_back"
+    except (ValueError, IndexError):
+        await callback.answer("Помилка навігації", show_alert=True)
+        return
     product = await get_product_by_id(product_id)
 
     if not product:
